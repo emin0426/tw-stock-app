@@ -23,6 +23,7 @@ class _DummyCtx:
 class _DummySt(types.ModuleType):
     secrets = {}
     session_state = {}
+    query_params = {}
     def set_page_config(self, *a, **k): pass
     def markdown(self, *a, **k): pass
     def title(self, *a, **k): pass
@@ -32,12 +33,19 @@ class _DummySt(types.ModuleType):
     def error(self, *a, **k): pass
     def caption(self, *a, **k): pass
     def subheader(self, *a, **k): pass
+    def write(self, *a, **k): pass
+    def altair_chart(self, *a, **k): pass
+    def rerun(self, *a, **k): pass
     def stop(self): raise SystemExit(0)
     def cache_data(self, *a, **k):
         def _deco(fn): return fn
         return _deco
     def expander(self, *a, **k): return _DummyCtx()
-    def columns(self, n): return [self] * n
+    def form(self, *a, **k): return _DummyCtx()
+    def form_submit_button(self, *a, **k): return False
+    def columns(self, n):
+        cnt = len(n) if isinstance(n, (list, tuple)) else int(n)
+        return [self] * cnt
     def number_input(self, *a, **k): return k.get("value", 0)
     def tabs(self, names): return [_DummyCtx() for _ in names]
     def text_input(self, *a, **k): return ""
@@ -46,6 +54,8 @@ class _DummySt(types.ModuleType):
     def download_button(self, *a, **k): pass
     def spinner(self, *a, **k): return _DummyCtx()
     def metric(self, *a, **k): pass
+    def __getattr__(self, name):
+        return lambda *a, **k: None
 
 
 sys.modules["streamlit"] = _DummySt("streamlit")
