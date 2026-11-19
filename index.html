@@ -1,0 +1,879 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>台股選股雷達 Pro</title>
+
+  <!-- iOS & Android PWA 全螢幕桌面 App 設定（免額外檔案） -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="台股選股雷達" />
+  <meta name="theme-color" content="#0b0f19" />
+  <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' rx='40' fill='%230b0f19'/%3E%3Crect x='24' y='96' width='22' height='50' rx='6' fill='%2322c55e'/%3E%3Crect x='62' y='72' width='22' height='74' rx='6' fill='%23ef4444'/%3E%3Crect x='100' y='52' width='22' height='94' rx='6' fill='%23ef4444'/%3E%3Crect x='138' y='34' width='22' height='112' rx='6' fill='%23f59e0b'/%3E%3Cpath d='M28 84 L73 56 L111 40 L149 22' stroke='%2338bdf8' stroke-width='6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E" />
+  <link rel="manifest" href="data:application/manifest+json,%7B%22name%22%3A%22%E5%8F%B0%E8%82%A1%E9%81%B8%E8%82%A1%E9%9B%B7%E9%81%94%20Pro%22%2C%22short_name%22%3A%22%E5%8F%B0%E8%82%A1%E9%9B%B7%E9%81%94%22%2C%22start_url%22%3A%22.%22%2C%22display%22%3A%22standalone%22%2C%22background_color%22%3A%22%230b0f19%22%2C%22theme_color%22%3A%22%230b0f19%22%7D" />
+
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet" />
+
+  <style>
+    :root {
+      color-scheme: dark;
+    }
+    body {
+      font-family: 'Inter', 'Noto Sans TC', -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: #0b0f19;
+      color: #e2e8f0;
+      -webkit-tap-highlight-color: transparent;
+      overscroll-behavior-y: none;
+    }
+    .safe-bottom {
+      padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 74px);
+    }
+    .nav-safe {
+      padding-bottom: env(safe-area-inset-bottom, 6px);
+    }
+    .glass-header {
+      background: rgba(11, 15, 25, 0.88);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+    }
+    .stock-card {
+      background: linear-gradient(145deg, #131b2e 0%, #101626 100%);
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      transition: transform 0.14s ease, border-color 0.14s ease;
+    }
+    .stock-card:active {
+      transform: scale(0.985);
+    }
+    .badge-star {
+      background: rgba(239, 68, 68, 0.16);
+      color: #fca5a5;
+      border: 1px solid rgba(239, 68, 68, 0.35);
+    }
+    .badge-watch {
+      background: rgba(56, 189, 248, 0.15);
+      color: #7dd3fc;
+      border: 1px solid rgba(56, 189, 248, 0.35);
+    }
+    .badge-warn {
+      background: rgba(245, 158, 11, 0.16);
+      color: #fcd34d;
+      border: 1px solid rgba(245, 158, 11, 0.35);
+    }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    @keyframes slideUp {
+      from { transform: translateY(100%); opacity: 0.4; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+    .modal-sheet {
+      animation: slideUp 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+  </style>
+</head>
+<body class="min-h-screen antialiased selection:bg-sky-500/30">
+
+  <!-- 頂部固定導覽列 -->
+  <header class="glass-header sticky top-0 z-30 border-b border-slate-800/80 px-4 pt-3 pb-2.5">
+    <div class="max-w-lg mx-auto flex items-center justify-between gap-2">
+      <div class="flex items-center gap-2.5">
+        <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-rose-500 to-amber-500 flex items-center justify-center shadow-lg shadow-rose-500/20">
+          <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" stroke-width="2.4" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M3 17l6-6 4 4 8-8m0 0h-6m6 0v6" />
+          </svg>
+        </div>
+        <div>
+          <h1 class="text-base font-bold tracking-tight text-white leading-tight">台股選股雷達 <span class="text-xs font-semibold text-amber-400">Pro</span></h1>
+          <p id="headerSubtitle" class="text-[11px] text-slate-400 leading-tight mt-0.5">每日 15:30 同步收盤與三大法人</p>
+        </div>
+      </div>
+
+      <button id="btnRefresh" type="button" class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800/90 hover:bg-slate-700 text-xs font-medium text-slate-200 border border-slate-700/80 active:scale-95 transition">
+        <svg id="refreshIcon" class="w-3.5 h-3.5 text-sky-400" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+        </svg>
+        <span>更新</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- 主內容區 -->
+  <main class="max-w-lg mx-auto px-3.5 pt-3 safe-bottom">
+
+    <!-- ==================== TAB 1: 雷達 (每日選股名單) ==================== -->
+    <section id="view-radar" class="space-y-3">
+      <!-- 資料日期與來源狀態橫幅 -->
+      <div id="statusBanner" class="rounded-xl px-3.5 py-2.5 bg-slate-900/90 border border-slate-800 flex items-center justify-between gap-2 text-xs">
+        <div class="flex items-center gap-2 min-w-0">
+          <span id="statusDot" class="w-2 h-2 rounded-full bg-emerald-400 shrink-0"></span>
+          <span id="statusText" class="text-slate-300 truncate">正在載入最新 15:30 預抓快取...</span>
+        </div>
+        <span id="dataDatePill" class="px-2 py-0.5 rounded-md bg-slate-800 text-sky-300 font-semibold text-[11px] shrink-0">--</span>
+      </div>
+
+      <!-- 市場分段切換列 -->
+      <div class="grid grid-cols-4 gap-1.5 p-1 rounded-xl bg-slate-900 border border-slate-800/90" id="marketTabs">
+        <button data-mode="twse" class="market-btn py-2 rounded-lg text-xs font-semibold transition">上市股</button>
+        <button data-mode="tpex" class="market-btn py-2 rounded-lg text-xs font-semibold transition">上櫃股</button>
+        <button data-mode="top" class="market-btn py-2 rounded-lg text-xs font-semibold transition">權值股</button>
+        <button data-mode="emerging" class="market-btn py-2 rounded-lg text-xs font-semibold transition">興櫃股</button>
+      </div>
+
+      <!-- 搜尋與篩選排序列 -->
+      <div class="flex items-center gap-2">
+        <div class="relative flex-1">
+          <svg class="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-4.35-4.35M10.5 18a7.5 7.5 0 100-15 7.5 7.5 0 000 15z" />
+          </svg>
+          <input id="searchInput" type="text" placeholder="搜尋代號或股名（如 3004、豐達科）" class="w-full pl-9 pr-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500" />
+        </div>
+        <select id="sortSelect" class="py-2 px-2.5 rounded-xl bg-slate-900 border border-slate-800 text-xs text-slate-200 focus:outline-none focus:border-sky-500">
+          <option value="pct">漲幅高→低</option>
+          <option value="bw">帶寬窄→寬</option>
+          <option value="vol">量倍數高→低</option>
+          <option value="bias">乖離低→高</option>
+        </select>
+      </div>
+
+      <!-- 達標等級篩選膠囊 -->
+      <div class="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5" id="tierFilters">
+        <button data-tier="all" class="tier-btn px-3 py-1.5 rounded-full text-xs font-medium shrink-0 transition">全部名單</button>
+        <button data-tier="full" class="tier-btn px-3 py-1.5 rounded-full text-xs font-medium shrink-0 transition">🎯 4項全中</button>
+        <button data-tier="near" class="tier-btn px-3 py-1.5 rounded-full text-xs font-medium shrink-0 transition">👀 3項準突破</button>
+        <button data-tier="insti" class="tier-btn px-3 py-1.5 rounded-full text-xs font-medium shrink-0 transition">🏦 法人5日買超</button>
+      </div>
+
+      <!-- 統計 KPI 摘要列 -->
+      <div class="grid grid-cols-3 gap-2">
+        <div class="rounded-xl bg-slate-900/80 border border-slate-800/80 p-2.5 text-center">
+          <div class="text-[11px] text-slate-400">4項全中</div>
+          <div id="kpiFullCount" class="text-lg font-bold text-rose-400 mt-0.5">0</div>
+        </div>
+        <div class="rounded-xl bg-slate-900/80 border border-slate-800/80 p-2.5 text-center">
+          <div class="text-[11px] text-slate-400">3項準突破</div>
+          <div id="kpiNearCount" class="text-lg font-bold text-sky-400 mt-0.5">0</div>
+        </div>
+        <div class="rounded-xl bg-slate-900/80 border border-slate-800/80 p-2.5 text-center">
+          <div class="text-[11px] text-slate-400">掃描總檔數</div>
+          <div id="kpiScanned" class="text-lg font-bold text-slate-200 mt-0.5">--</div>
+        </div>
+      </div>
+
+      <!-- 股票卡片清單 -->
+      <div id="stockList" class="space-y-2.5"></div>
+    </section>
+
+    <!-- ==================== TAB 2: 自選追蹤 ==================== -->
+    <section id="view-watchlist" class="hidden space-y-3">
+      <div class="flex items-center justify-between">
+        <div>
+          <h2 class="text-base font-bold text-white">⭐ 我的自選追蹤清單</h2>
+          <p class="text-xs text-slate-400 mt-0.5">點選股票卡片右上角星星即可加入追蹤</p>
+        </div>
+        <button id="btnClearWatch" type="button" class="text-xs text-slate-400 hover:text-rose-400 px-2.5 py-1 rounded-lg border border-slate-800">清空</button>
+      </div>
+      <div id="watchlistContainer" class="space-y-2.5"></div>
+    </section>
+
+    <!-- ==================== TAB 3: 停損試算 & 即時健檢 ==================== -->
+    <section id="view-tools" class="hidden space-y-3.5">
+      <div class="rounded-2xl bg-slate-900/90 border border-slate-800 p-4 space-y-3">
+        <div class="flex items-center justify-between">
+          <h2 class="text-sm font-bold text-white flex items-center gap-1.5">
+            <span>🛡️</span> 進場停損與盈虧比試算器
+          </h2>
+          <span class="text-[11px] text-amber-400 font-medium">台股手續費與證交稅參考</span>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2.5">
+          <div>
+            <label class="block text-[11px] text-slate-400 mb-1">預計買進價 (元)</label>
+            <input id="calcEntry" type="number" step="0.1" value="129" class="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-sm font-semibold text-white focus:outline-none focus:border-sky-500" />
+          </div>
+          <div>
+            <label class="block text-[11px] text-slate-400 mb-1">短線停損價 (紅K低點)</label>
+            <input id="calcStop" type="number" step="0.1" value="120" class="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-sm font-semibold text-emerald-400 focus:outline-none focus:border-sky-500" />
+          </div>
+          <div>
+            <label class="block text-[11px] text-slate-400 mb-1">預計買進張數 (張)</label>
+            <input id="calcLots" type="number" step="1" min="1" value="2" class="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-sm font-semibold text-white focus:outline-none focus:border-sky-500" />
+          </div>
+          <div>
+            <label class="block text-[11px] text-slate-400 mb-1">目標盈虧比 (倍)</label>
+            <select id="calcRR" class="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-sm font-semibold text-white focus:outline-none focus:border-sky-500">
+              <option value="2">2 : 1 (穩健波段)</option>
+              <option value="3" selected>3 : 1 (標準大賺小賠)</option>
+              <option value="4">4 : 1 (強勢主升段)</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="calcOutput" class="grid grid-cols-2 gap-2 pt-1"></div>
+      </div>
+
+      <!-- 連動 Streamlit 單檔任意股健檢 -->
+      <div class="rounded-2xl bg-gradient-to-br from-slate-900 to-sky-950/40 border border-sky-500/30 p-4 space-y-2.5">
+        <h3 class="text-sm font-bold text-white">🩺 想健檢不在名單內的任意冷門股？</h3>
+        <p class="text-xs text-slate-300 leading-relaxed">
+          本 PWA 畫面專為「每日 15:30 預抓選股名單 0.1 秒秒開」設計；若想隨意輸入任何台股代號現算四條件與三大法人成本，可點擊下方按鈕直接開啟您的雲端即時健檢頁：
+        </p>
+        <div class="flex items-center gap-2">
+          <input id="streamlitUrlInput" type="url" placeholder="貼上您的 Streamlit App 網址（會自動記住）" class="flex-1 px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-200 focus:outline-none focus:border-sky-500" />
+          <button id="btnOpenStreamlit" type="button" class="px-3.5 py-2 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-bold shrink-0 active:scale-95 transition">開啟健檢</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== TAB 4: 策略指南 & 免責聲明 ==================== -->
+    <section id="view-guide" class="hidden space-y-3">
+      <div class="rounded-2xl bg-slate-900/90 border border-slate-800 p-4 space-y-3">
+        <h2 class="text-base font-bold text-white">📖 四維度壓縮突破與主力成本指南</h2>
+        <div class="space-y-2.5 text-xs text-slate-300 leading-relaxed">
+          <div class="p-3 rounded-xl bg-slate-950/70 border border-slate-800/80">
+            <div class="font-bold text-rose-400 mb-1">1. 突破前布林帶寬上限（預設 ≤ 15%）</div>
+            代表過去 20 天股價像彈簧一樣壓縮整理、籌碼沉澱（&lt;10% 極佳）；搭配今日上下軌反向張開，確保抓到的是「底部剛彈開的第一根」，避開高檔末端追高。
+          </div>
+          <div class="p-3 rounded-xl bg-slate-950/70 border border-slate-800/80">
+            <div class="font-bold text-sky-400 mb-1">2. 最低日成交金額（2,000 萬 / 興櫃 500 萬）＋ 量能倍數 ≥ 1.5 倍</div>
+            成交金額避免誤殺高價股與小型績優股；量能倍數甜美區為 <b>1.5 ~ 3.5 倍</b>，日週轉率超過 <b>8%</b> 會亮過熱警戒。
+          </div>
+          <div class="p-3 rounded-xl bg-slate-950/70 border border-slate-800/80">
+            <div class="font-bold text-amber-400 mb-1">3. 主力進場成本（20日 VWAP / 60日 POC / 法人買超成本）</div>
+            VWAP 放大爆量日權重，比月線更貼近大資金換手價；法人 20 日買超成本若緊貼現價下方 0%~5%，主力最有意願護盤。
+          </div>
+          <div class="p-3 rounded-xl bg-slate-950/70 border border-slate-800/80">
+            <div class="font-bold text-emerald-400 mb-1">4. 雙層防守紀律（大賺小賠核心）</div>
+            短線第一道停損守<b>「突破紅 K 低點」</b>（跌破代表假突破立即小賠出場）；獲利拉開後改守<b>「跌破 20MA 月線三日站不回」</b>抱完整波段。
+          </div>
+        </div>
+      </div>
+
+      <div class="rounded-xl bg-slate-900/60 border border-slate-800 p-3.5 text-[11px] text-slate-400 leading-relaxed">
+        <span class="font-bold text-slate-300">⚠️ 免責聲明：</span>
+        本 App 僅針對公開市場歷史價量資料與證交所／櫃買中心三大法人籌碼進行自動化量化統計，所有指標與文字拆解皆為規則運算結果，不構成任何投資買賣建議或投顧推薦。投資人應獨立判斷並審慎評估風險，盈虧自負。
+      </div>
+    </section>
+  </main>
+
+  <!-- 底部原生感導覽列 -->
+  <nav class="glass-header fixed bottom-0 left-0 right-0 z-30 border-t border-slate-800/90 nav-safe">
+    <div class="max-w-lg mx-auto grid grid-cols-4 pt-1.5 pb-1">
+      <button data-tab="radar" class="nav-btn flex flex-col items-center gap-0.5 py-1 text-sky-400">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+        </svg>
+        <span class="text-[11px] font-semibold">選股雷達</span>
+      </button>
+      <button data-tab="watchlist" class="nav-btn flex flex-col items-center gap-0.5 py-1 text-slate-400">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M11.48 3.499a.562.562 0 011.04 0l2.125 5.111a.563.563 0 00.475.345l5.518.442c.499.04.701.663.321.988l-4.204 3.602a.563.563 0 00-.182.557l1.285 5.385a.562.562 0 01-.84.61l-4.725-2.885a.563.563 0 00-.586 0L6.982 20.54a.562.562 0 01-.84-.61l1.285-5.386a.562.562 0 00-.182-.557l-4.204-3.602a.563.563 0 01.321-.988l5.518-.442a.563.563 0 00.475-.345L11.48 3.5z" />
+        </svg>
+        <span class="text-[11px] font-medium">自選追蹤</span>
+      </button>
+      <button data-tab="tools" class="nav-btn flex flex-col items-center gap-0.5 py-1 text-slate-400">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+        </svg>
+        <span class="text-[11px] font-medium">停損試算</span>
+      </button>
+      <button data-tab="guide" class="nav-btn flex flex-col items-center gap-0.5 py-1 text-slate-400">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+        </svg>
+        <span class="text-[11px] font-medium">指標指南</span>
+      </button>
+    </div>
+  </nav>
+
+  <!-- 個股深度診斷滑出視窗 (Bottom Sheet Modal) -->
+  <div id="detailModal" class="fixed inset-0 z-50 hidden">
+    <div id="modalBackdrop" class="absolute inset-0 bg-black/70 backdrop-blur-sm"></div>
+    <div class="modal-sheet absolute bottom-0 left-0 right-0 max-w-lg mx-auto bg-[#0f1626] border-t border-slate-700/80 rounded-t-3xl max-h-[88vh] flex flex-col shadow-2xl">
+      <div class="flex items-center justify-between px-5 pt-4 pb-3 border-b border-slate-800">
+        <div>
+          <div id="modalTitle" class="text-lg font-bold text-white">--</div>
+          <div id="modalSub" class="text-xs text-slate-400 mt-0.5">--</div>
+        </div>
+        <button id="btnCloseModal" type="button" class="w-8 h-8 rounded-full bg-slate-800 hover:bg-slate-700 flex items-center justify-center text-slate-300">✕</button>
+      </div>
+      <div id="modalBody" class="overflow-y-auto px-5 py-4 space-y-3.5 text-xs"></div>
+      <div class="px-5 py-3 border-t border-slate-800 flex gap-2">
+        <button id="btnSendToCalc" type="button" class="flex-1 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs active:scale-95 transition">套入停損試算器</button>
+        <button id="btnModalStar" type="button" class="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs active:scale-95 transition">☆ 加入自選</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast 輕提示 -->
+  <div id="toast" class="fixed top-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full bg-slate-800 text-white text-xs font-medium shadow-lg border border-slate-700 hidden"></div>
+
+  <script>
+    // ==========================================
+    // 1. 雲端資料來源設定（自動讀取 GitHub 每日 15:35 預抓快取）
+    // ==========================================
+    const GITHUB_CACHE_BASE = "https://raw.githubusercontent.com/emin0426/tw-stock-app/main/daily_cache";
+
+    // 若尚未執行過 GitHub Actions 預抓，預設顯示使用者實測過的三檔真實範例供體驗介面
+    const DEMO_FALLBACK_DATA = {
+      twse: {
+        data_date: "2026-11-17 (預覽範例)",
+        generated_at: "尚未偵測到雲端 daily_cache，顯示範例",
+        valid_cnt: 1057,
+        total: 1057,
+        is_demo: true,
+        full_sorted: [],
+        near_top: [
+          {
+            "股票代碼": "3004", "股票名稱": "豐達科", "市場別": "上市股", "資料日期": "2026-11-17",
+            "收盤價": 129.0, "單日漲幅(%)": 4.45, "成交量(張)": 674, "日成交金額(萬元)": 8694.6,
+            "量能倍數(倍)": 1.77, "日週轉率(%)": 1.24, "昨日帶寬(%)": 8.59, "今日帶寬(%)": 9.63,
+            "距20MA乖離(%)": 4.73, "MACD柱狀體": 0.382, "上影線/紅K實體比": 0.12,
+            "突破紅K低點(停損參考)": 120.0, "20MA月線價": 123.17, "20日VWAP資金成本": 124.5,
+            "60日籌碼密集區(POC)": 122.0, "前波60日高點": 131.5, "近5日法人合計(張)": 185,
+            "近20日法人合計(張)": 420, "外資/投信連買天數": "外資連買3日 / 投信持平", "法人20日買超成本": 124.8,
+            "狀態與未達標細項": "達標 3/4 項；未達標：MACD已提前4天翻紅",
+            "_deep_report": {
+              "archetype_title": "💎 型態極佳的「先翻紅蓄勢、後爆量壓縮突破股」（豐達科型）",
+              "rating_badge": "★★★ 優先關注（3/4 強勢蓄勢突破）",
+              "pros_text": "• 【✅ 壓縮後真開口】昨日帶寬僅 8.59% 屬極度壓縮，今日擴張至 9.63% 且上下軌反向張開。\n• 【✅ 攻擊量＋紮實紅K】量能放大至 1.77 倍（674 張），收漲 +4.45% 且上影線極短。\n• 【✅ 位階安全順勢】收盤 129 元站穩上揚 20MA（123.17 元），乖離率僅 4.73%。",
+              "diagnosis_text": "• 【❌ MACD提前翻紅（屬正向蓄勢）】早在 4 天前即翻紅，今日續增配合爆量突破。\n• 【前波壓力與洗盤】前波 60 日高點壓力區約在 131.5 元（距現價約 +1.9%）。",
+              "chip_cost_text": "• 【量價主力成本】20日VWAP資金成本為 『124.5 元』（距成本 +3.61%）；60日POC 落在 『122.0 元』形成底部支撐；日週轉率 1.24% 屬健康換手。\n• 【三大法人動向】近5日買超 +185 張，法人20日買超成本約 『124.8 元』。",
+              "strategy_text": "• 【操作建議】型態具備起漲優勢，可順勢分批布局；隔日若開高 >3% 勿過度追價。\n• 【雙層防守價】短線停損看今日紅K低點 『120.0 元』（-6.98%）；波段改守 20MA 『123.17 元』（-4.52%）。"
+            }
+          },
+          {
+            "股票代碼": "8464", "股票名稱": "億豐", "市場別": "上市股", "資料日期": "2026-11-17",
+            "收盤價": 372.5, "單日漲幅(%)": 2.05, "成交量(張)": 753, "日成交金額(萬元)": 28049.3,
+            "量能倍數(倍)": 2.48, "日週轉率(%)": 0.26, "昨日帶寬(%)": 10.52, "今日帶寬(%)": 10.72,
+            "距20MA乖離(%)": 2.81, "MACD柱狀體": 0.786, "上影線/紅K實體比": 0.78,
+            "突破紅K低點(停損參考)": 361.5, "20MA月線價": 362.32, "20日VWAP資金成本": 364.2,
+            "60日籌碼密集區(POC)": 360.0, "前波60日高點": 388.0, "近5日法人合計(張)": 310,
+            "近20日法人合計(張)": 540, "外資/投信連買天數": "外資連買2日 / 投信連買4日", "法人20日買超成本": 365.0,
+            "狀態與未達標細項": "達標 3/4 項；未達標：上影線/紅K實體比達 0.78 倍(超過 0.5 上限)",
+            "_deep_report": {
+              "archetype_title": "⚠️ 動能與壓縮皆到位，但「盤中逢高遇壓留上影線」之準突破股（億豐型）",
+              "rating_badge": "★★☆ 觀察等待（3/4 等隔日站穩上影線確認換手）",
+              "pros_text": "• 【✅ MACD剛翻紅點火】MACD 柱狀體（0.786）近 3 日內剛翻正且持續遞增。\n• 【✅ 壓縮後真開口】昨日帶寬 10.52% 屬健康收斂，今日擴張至 10.72%。\n• 【✅ 位階安全順勢】距上揚月線乖離僅 2.81%，下檔風險極低。",
+              "diagnosis_text": "• 【❌ 留長上影線】量能放大 2.48 倍但盤中遇壓拉回，上影線比 0.78；建議等隔日站穩上影線一半確認消化賣壓。",
+              "chip_cost_text": "• 【量價主力成本】20日VWAP資金成本為 『364.2 元』；今日成交金額 2.8 億元。\n• 【三大法人動向】外資投信同步偏多，法人20日買超成本約 『365.0 元』。",
+              "strategy_text": "• 【操作建議】尾盤勿急追，觀察隔日能否帶量吃掉上影線。\n• 【雙層防守價】紅K低點 『361.5 元』 與月線 『362.32 元』高度重疊，形成雙重支撐鐵板區！"
+            }
+          },
+          {
+            "股票代碼": "2474", "股票名稱": "可成", "市場別": "上市股", "資料日期": "2026-11-17",
+            "收盤價": 198.5, "單日漲幅(%)": 0.25, "成交量(張)": 3241, "日成交金額(萬元)": 64333.9,
+            "量能倍數(倍)": 1.81, "日週轉率(%)": 0.48, "昨日帶寬(%)": 10.2, "今日帶寬(%)": 10.47,
+            "距20MA乖離(%)": 3.21, "MACD柱狀體": 1.434, "上影線/紅K實體比": 2.4,
+            "突破紅K低點(停損參考)": 196.0, "20MA月線價": 192.32, "20日VWAP資金成本": 194.1,
+            "60日籌碼密集區(POC)": 195.0, "前波60日高點": 208.0, "近5日法人合計(張)": -210,
+            "近20日法人合計(張)": 120, "外資/投信連買天數": "外資連賣2日 / 投信持平", "法人20日買超成本": 195.5,
+            "狀態與未達標細項": "達標 3/4 項；未達標：爆量衝高卻幾乎吐回漲幅",
+            "_deep_report": {
+              "archetype_title": "🛑 盤中衝高卻幾乎吐回漲幅的「假突破警戒股」（可成型）",
+              "rating_badge": "★☆☆ 警戒避開（3/4 展現第4道濾網保護作用）",
+              "pros_text": "• 【✅ 技術面三項達標】MACD 翻紅、布林開口放大、站上上揚月線。",
+              "diagnosis_text": "• 【❌ 假突破警戒！】爆出 1.81 倍大成交量（3,241 張），收盤漲幅卻僅剩 +0.25%，上方賣壓沉重！第 4 道濾網成功攔截假突破。",
+              "chip_cost_text": "• 【量價主力成本】20日VWAP資金成本為 『194.1 元』；60日POC 為 『195.0 元』。\n• 【三大法人動向】近5日法人逢高調節賣超 -210 張。",
+              "strategy_text": "• 【操作建議】暫不進場！必須等日後收出紮實長紅棒吃掉今日上影線高點後再考慮。\n• 【雙層防守價】短線看 『196.0 元』，波段看月線 『192.32 元』。"
+            }
+          }
+        ]
+      }
+    };
+
+    // ==========================================
+    // 2. 狀態管理
+    // ==========================================
+    const state = {
+      activeTab: "radar",
+      mode: "twse",
+      tier: "all",
+      sort: "pct",
+      search: "",
+      cacheByMode: {},
+      watchlist: [],
+      selectedStock: null,
+      streamlitUrl: ""
+    };
+
+    try {
+      const savedWatch = localStorage.getItem("tw_radar_watchlist");
+      if (savedWatch) state.watchlist = JSON.parse(savedWatch);
+      const savedUrl = localStorage.getItem("tw_radar_streamlit_url");
+      if (savedUrl) state.streamlitUrl = savedUrl;
+    } catch (e) {}
+
+    function saveWatchlist() {
+      try { localStorage.setItem("tw_radar_watchlist", JSON.stringify(state.watchlist)); } catch (e) {}
+    }
+
+    function showToast(msg) {
+      const el = document.getElementById("toast");
+      el.textContent = msg;
+      el.classList.remove("hidden");
+      clearTimeout(window._toastTimer);
+      window._toastTimer = setTimeout(() => el.classList.add("hidden"), 2200);
+    }
+
+    // ==========================================
+    // 3. 讀取 GitHub 每日 15:35 預抓快取 JSON
+    // ==========================================
+    async function loadMarketData(mode, forceNetwork = false) {
+      const statusText = document.getElementById("statusText");
+      const statusDot = document.getElementById("statusDot");
+      const datePill = document.getElementById("dataDatePill");
+      const refreshIcon = document.getElementById("refreshIcon");
+
+      if (!forceNetwork && state.cacheByMode[mode]) {
+        renderRadar();
+        return;
+      }
+
+      refreshIcon.classList.add("animate-spin");
+      statusDot.className = "w-2 h-2 rounded-full bg-amber-400 animate-pulse shrink-0";
+      statusText.textContent = "正在載入雲端 15:30 預抓快取...";
+
+      try {
+        const url = `${GITHUB_CACHE_BASE}/${mode}.json?t=${Date.now()}`;
+        const resp = await fetch(url, { cache: "no-store" });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const json = await resp.json();
+        state.cacheByMode[mode] = json;
+        statusDot.className = "w-2 h-2 rounded-full bg-emerald-400 shrink-0";
+        statusText.textContent = `⚡ 已載入 15:30 雲端快取（${json.generated_at || "最新"}）`;
+        datePill.textContent = json.data_date || "--";
+      } catch (err) {
+        // 尚無雲端快取時退回示範範例（讓使用者在預覽與首次開啟時就能完整體驗）
+        const fallback = DEMO_FALLBACK_DATA[mode] || {
+          data_date: "尚無雲端快取",
+          generated_at: "請至 GitHub Actions 執行首次預抓",
+          valid_cnt: 0,
+          total: 0,
+          is_demo: true,
+          full_sorted: [],
+          near_top: []
+        };
+        state.cacheByMode[mode] = fallback;
+        statusDot.className = "w-2 h-2 rounded-full bg-amber-400 shrink-0";
+        statusText.textContent = fallback.near_top.length
+          ? "預覽模式（請在 GitHub Actions 跑一次即同步每日最新）"
+          : "此市場尚無雲端預抓檔，請至 GitHub Actions 執行一次";
+        datePill.textContent = fallback.data_date;
+      } finally {
+        refreshIcon.classList.remove("animate-spin");
+        renderRadar();
+      }
+    }
+
+    // ==========================================
+    // 4. 畫面渲染：股票卡片與清單
+    // ==========================================
+    function isStarred(code) {
+      return state.watchlist.some(s => s["股票代碼"] === code);
+    }
+
+    function toggleWatch(stockObj) {
+      const code = stockObj["股票代碼"];
+      const idx = state.watchlist.findIndex(s => s["股票代碼"] === code);
+      if (idx >= 0) {
+        state.watchlist.splice(idx, 1);
+        showToast(`已移除自選：${code} ${stockObj["股票名稱"]}`);
+      } else {
+        state.watchlist.unshift(stockObj);
+        showToast(`⭐ 已加入自選：${code} ${stockObj["股票名稱"]}`);
+      }
+      saveWatchlist();
+      renderRadar();
+      renderWatchlist();
+      if (state.selectedStock && state.selectedStock["股票代碼"] === code) {
+        updateModalStarButton();
+      }
+    }
+
+    function createStockCardHTML(row, tierTag) {
+      const dr = row._deep_report || {};
+      const badge = dr.rating_badge || row["實戰型態定調與優先級"] || "";
+      const pct = Number(row["單日漲幅(%)"] || 0);
+      const pctColor = pct > 0 ? "text-rose-400" : pct < 0 ? "text-emerald-400" : "text-slate-300";
+      const pctSign = pct > 0 ? "+" : "";
+      const badgeCls = badge.includes("★★★") ? "badge-star" : (badge.includes("警戒") || badge.includes("✖")) ? "badge-warn" : "badge-watch";
+      const starChar = isStarred(row["股票代碼"]) ? "★" : "☆";
+      const starColor = isStarred(row["股票代碼"]) ? "text-amber-400" : "text-slate-500";
+      const insti5 = row["近5日法人合計(張)"];
+      const insti5Text = typeof insti5 === "number" ? `${insti5 > 0 ? "+" : ""}${insti5}張` : (insti5 || "--");
+      const insti5Color = typeof insti5 === "number" ? (insti5 > 0 ? "text-rose-400" : insti5 < 0 ? "text-emerald-400" : "text-slate-300") : "text-slate-400";
+      const turnover = row["日週轉率(%)"] !== undefined && row["日週轉率(%)"] !== "" ? `${row["日週轉率(%)"]}%` : "--";
+
+      return `
+        <div class="stock-card rounded-2xl p-3.5 cursor-pointer" data-code="${row["股票代碼"]}">
+          <div class="flex items-start justify-between gap-2">
+            <div class="min-w-0">
+              <div class="flex items-center gap-2">
+                <span class="text-base font-bold text-white">${row["股票名稱"]}</span>
+                <span class="text-xs font-mono text-slate-400">${row["股票代碼"]}</span>
+                <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold ${tierTag === "FULL" ? "bg-rose-500/20 text-rose-300" : "bg-sky-500/20 text-sky-300"}">
+                  ${tierTag === "FULL" ? "4/4全中" : "3/4準突破"}
+                </span>
+              </div>
+              <div class="mt-1.5 inline-block px-2 py-0.5 rounded-md text-[11px] font-medium ${badgeCls}">
+                ${badge.split("（")[0]}
+              </div>
+            </div>
+
+            <div class="flex items-start gap-2.5 shrink-0">
+              <div class="text-right">
+                <div class="text-lg font-bold leading-none ${pctColor}">${row["收盤價"]}</div>
+                <div class="text-xs font-semibold mt-1 ${pctColor}">${pctSign}${pct.toFixed(2)}%</div>
+              </div>
+              <button type="button" class="star-btn text-xl leading-none px-1 ${starColor}" data-star-code="${row["股票代碼"]}">${starChar}</button>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-4 gap-1.5 mt-3 pt-2.5 border-t border-slate-800/80 text-center">
+            <div>
+              <div class="text-[10px] text-slate-400">20日VWAP</div>
+              <div class="text-xs font-semibold text-amber-300 mt-0.5">${row["20日VWAP資金成本"] ?? "--"}</div>
+            </div>
+            <div>
+              <div class="text-[10px] text-slate-400">法人5日</div>
+              <div class="text-xs font-semibold ${insti5Color} mt-0.5">${insti5Text}</div>
+            </div>
+            <div>
+              <div class="text-[10px] text-slate-400">帶寬 / 週轉</div>
+              <div class="text-xs font-semibold text-slate-200 mt-0.5">${row["今日帶寬(%)"]}% / ${turnover}</div>
+            </div>
+            <div>
+              <div class="text-[10px] text-slate-400">紅K停損</div>
+              <div class="text-xs font-semibold text-emerald-400 mt-0.5">${row["突破紅K低點(停損參考)"] ?? "--"}</div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderRadar() {
+      const pkg = state.cacheByMode[state.mode];
+      const listEl = document.getElementById("stockList");
+
+      // 更新按鈕高亮
+      document.querySelectorAll(".market-btn").forEach(btn => {
+        const active = btn.dataset.mode === state.mode;
+        btn.className = `market-btn py-2 rounded-lg text-xs font-semibold transition ${
+          active ? "bg-sky-500 text-slate-950 shadow-sm" : "text-slate-400 hover:text-slate-200"
+        }`;
+      });
+      document.querySelectorAll(".tier-btn").forEach(btn => {
+        const active = btn.dataset.tier === state.tier;
+        btn.className = `tier-btn px-3 py-1.5 rounded-full text-xs font-medium shrink-0 transition ${
+          active ? "bg-slate-200 text-slate-950 font-bold" : "bg-slate-900 text-slate-400 border border-slate-800"
+        }`;
+      });
+
+      if (!pkg) return;
+
+      const fullRows = (pkg.full_sorted || []).map(r => ({ ...r, _tier: "FULL" }));
+      const nearRows = (pkg.near_top || []).map(r => ({ ...r, _tier: "NEAR" }));
+      document.getElementById("kpiFullCount").textContent = fullRows.length;
+      document.getElementById("kpiNearCount").textContent = nearRows.length;
+      document.getElementById("kpiScanned").textContent = pkg.valid_cnt || "--";
+
+      let items = [...fullRows, ...nearRows];
+      if (state.tier === "full") items = items.filter(r => r._tier === "FULL");
+      if (state.tier === "near") items = items.filter(r => r._tier === "NEAR");
+      if (state.tier === "insti") items = items.filter(r => typeof r["近5日法人合計(張)"] === "number" && r["近5日法人合計(張)"] > 0);
+
+      if (state.search.trim()) {
+        const q = state.search.trim().toLowerCase();
+        items = items.filter(r =>
+          String(r["股票代碼"]).toLowerCase().includes(q) ||
+          String(r["股票名稱"]).toLowerCase().includes(q)
+        );
+      }
+
+      items.sort((a, b) => {
+        if (state.sort === "bw") return (a["今日帶寬(%)"] || 999) - (b["今日帶寬(%)"] || 999);
+        if (state.sort === "vol") return (b["量能倍數(倍)"] || 0) - (a["量能倍數(倍)"] || 0);
+        if (state.sort === "bias") return (a["距20MA乖離(%)"] || 999) - (b["距20MA乖離(%)"] || 999);
+        return (b["單日漲幅(%)"] || -999) - (a["單日漲幅(%)"] || -999);
+      });
+
+      if (!items.length) {
+        listEl.innerHTML = `
+          <div class="rounded-2xl bg-slate-900/70 border border-slate-800 p-8 text-center text-xs text-slate-400">
+            目前篩選條件下無符合個股。<br/>可切換其他市場或點選「全部名單」查看。
+          </div>`;
+        return;
+      }
+
+      listEl.innerHTML = items.map(r => createStockCardHTML(r, r._tier)).join("");
+
+      // 綁定卡片點擊與星星按鈕
+      const lookup = Object.fromEntries(items.map(r => [r["股票代碼"], r]));
+      listEl.querySelectorAll(".stock-card").forEach(card => {
+        card.addEventListener("click", (e) => {
+          if (e.target.closest(".star-btn")) return;
+          const row = lookup[card.dataset.code];
+          if (row) openDetailModal(row);
+        });
+      });
+      listEl.querySelectorAll(".star-btn").forEach(btn => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const row = lookup[btn.dataset.starCode];
+          if (row) toggleWatch(row);
+        });
+      });
+    }
+
+    function renderWatchlist() {
+      const el = document.getElementById("watchlistContainer");
+      if (!state.watchlist.length) {
+        el.innerHTML = `
+          <div class="rounded-2xl bg-slate-900/70 border border-slate-800 p-8 text-center text-xs text-slate-400">
+            尚未加入任何自選股票。<br/>在「選股雷達」點選卡片右上角的 ☆ 即可收藏追蹤。
+          </div>`;
+        return;
+      }
+      el.innerHTML = state.watchlist.map(r => createStockCardHTML(r, r._tier || "NEAR")).join("");
+      const lookup = Object.fromEntries(state.watchlist.map(r => [r["股票代碼"], r]));
+      el.querySelectorAll(".stock-card").forEach(card => {
+        card.addEventListener("click", (e) => {
+          if (e.target.closest(".star-btn")) return;
+          const row = lookup[card.dataset.code];
+          if (row) openDetailModal(row);
+        });
+      });
+      el.querySelectorAll(".star-btn").forEach(btn => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const row = lookup[btn.dataset.starCode];
+          if (row) toggleWatch(row);
+        });
+      });
+    }
+
+    // ==========================================
+    // 5. 個股詳情 Bottom Sheet Modal
+    // ==========================================
+    function updateModalStarButton() {
+      const btn = document.getElementById("btnModalStar");
+      if (!state.selectedStock) return;
+      const starred = isStarred(state.selectedStock["股票代碼"]);
+      btn.textContent = starred ? "★ 已在自選" : "☆ 加入自選";
+      btn.className = starred
+        ? "px-4 py-2.5 rounded-xl bg-amber-500/20 text-amber-300 border border-amber-500/40 font-semibold text-xs active:scale-95 transition"
+        : "px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs active:scale-95 transition";
+    }
+
+    function openDetailModal(row) {
+      state.selectedStock = row;
+      const dr = row._deep_report || {};
+      const pct = Number(row["單日漲幅(%)"] || 0);
+      const pctStr = `${pct > 0 ? "+" : ""}${pct.toFixed(2)}%`;
+
+      document.getElementById("modalTitle").textContent = `${row["股票代碼"]} ${row["股票名稱"]} (${row["收盤價"]}元 / ${pctStr})`;
+      document.getElementById("modalSub").textContent = `${row["市場別"]} ｜ 資料日：${row["資料日期"]} ｜ ${dr.rating_badge || ""}`;
+
+      const body = document.getElementById("modalBody");
+      body.innerHTML = `
+        <div class="p-3 rounded-xl bg-slate-900 border border-slate-800 font-semibold text-sky-300 leading-relaxed">
+          ${dr.archetype_title || row["實戰型態定調與優先級"] || ""}
+        </div>
+
+        <div class="grid grid-cols-3 gap-2 text-center">
+          <div class="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
+            <div class="text-[10px] text-slate-400">20日VWAP成本</div>
+            <div class="text-sm font-bold text-amber-300 mt-0.5">${row["20日VWAP資金成本"] ?? "--"}</div>
+          </div>
+          <div class="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
+            <div class="text-[10px] text-slate-400">法人20日成本</div>
+            <div class="text-sm font-bold text-rose-300 mt-0.5">${row["法人20日買超成本"] ?? "--"}</div>
+          </div>
+          <div class="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
+            <div class="text-[10px] text-slate-400">60日POC密集區</div>
+            <div class="text-sm font-bold text-sky-300 mt-0.5">${row["60日籌碼密集區(POC)"] ?? "--"}</div>
+          </div>
+          <div class="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
+            <div class="text-[10px] text-slate-400">紅K停損低點</div>
+            <div class="text-sm font-bold text-emerald-400 mt-0.5">${row["突破紅K低點(停損參考)"] ?? "--"}</div>
+          </div>
+          <div class="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
+            <div class="text-[10px] text-slate-400">20MA月線</div>
+            <div class="text-sm font-bold text-slate-200 mt-0.5">${row["20MA月線價"] ?? "--"}</div>
+          </div>
+          <div class="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
+            <div class="text-[10px] text-slate-400">日成交額 / 週轉</div>
+            <div class="text-xs font-bold text-slate-200 mt-1">${row["日成交金額(萬元)"] ?? "--"}萬 / ${row["日週轉率(%)"] ?? "--"}%</div>
+          </div>
+        </div>
+
+        <div class="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800 space-y-1.5">
+          <div class="font-bold text-emerald-400">✅ 達標指標優勢</div>
+          <div class="text-slate-200 whitespace-pre-line leading-relaxed">${dr.pros_text || "無"}</div>
+        </div>
+
+        <div class="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800 space-y-1.5">
+          <div class="font-bold text-sky-400">🔍 關鍵缺口／盤中軌跡與前波壓力</div>
+          <div class="text-slate-200 whitespace-pre-line leading-relaxed">${dr.diagnosis_text || "無"}</div>
+        </div>
+
+        <div class="p-3.5 rounded-xl bg-amber-950/25 border border-amber-500/30 space-y-1.5">
+          <div class="font-bold text-amber-300">💰 主力進場成本與三大法人籌碼</div>
+          <div class="text-slate-200 whitespace-pre-line leading-relaxed">${dr.chip_cost_text || "無"}</div>
+        </div>
+
+        <div class="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800 space-y-1.5">
+          <div class="font-bold text-rose-400">🛡️ 實戰進出場策略與雙層防守價</div>
+          <div class="text-slate-200 whitespace-pre-line leading-relaxed">${dr.strategy_text || "無"}</div>
+        </div>
+      `;
+
+      updateModalStarButton();
+      document.getElementById("detailModal").classList.remove("hidden");
+    }
+
+    function closeDetailModal() {
+      document.getElementById("detailModal").classList.add("hidden");
+    }
+
+    // ==========================================
+    // 6. 停損與盈虧比試算器
+    // ==========================================
+    function renderCalculator() {
+      const entry = parseFloat(document.getElementById("calcEntry").value) || 0;
+      const stop = parseFloat(document.getElementById("calcStop").value) || 0;
+      const lots = Math.max(1, parseInt(document.getElementById("calcLots").value, 10) || 1);
+      const rr = parseFloat(document.getElementById("calcRR").value) || 3;
+      const out = document.getElementById("calcOutput");
+
+      if (entry <= 0 || stop <= 0 || stop >= entry) {
+        out.innerHTML = `<div class="col-span-2 p-3 rounded-xl bg-slate-950 text-xs text-amber-400">請輸入有效的買進價，且停損價須低於買進價。</div>`;
+        return;
+      }
+
+      const costTotal = Math.round(entry * lots * 1000);
+      const riskPerShare = entry - stop;
+      const riskPct = (riskPerShare / entry) * 100;
+      const maxLoss = Math.round(riskPerShare * lots * 1000);
+      const targetPrice = +(entry + riskPerShare * rr).toFixed(2);
+      const estProfit = Math.round((targetPrice - entry) * lots * 1000);
+
+      out.innerHTML = `
+        <div class="p-3 rounded-xl bg-slate-950 border border-slate-800">
+          <div class="text-[10px] text-slate-400">總投入本金 (${lots} 張)</div>
+          <div class="text-base font-bold text-white mt-0.5">$${costTotal.toLocaleString()}</div>
+        </div>
+        <div class="p-3 rounded-xl bg-slate-950 border border-emerald-500/30">
+          <div class="text-[10px] text-slate-400">最大停損風險 (-${riskPct.toFixed(2)}%)</div>
+          <div class="text-base font-bold text-emerald-400 mt-0.5">-$${maxLoss.toLocaleString()}</div>
+        </div>
+        <div class="p-3 rounded-xl bg-slate-950 border border-rose-500/30">
+          <div class="text-[10px] text-slate-400">${rr}:1 參考停利目標價</div>
+          <div class="text-base font-bold text-rose-400 mt-0.5">${targetPrice} 元</div>
+        </div>
+        <div class="p-3 rounded-xl bg-slate-950 border border-rose-500/30">
+          <div class="text-[10px] text-slate-400">達標預估波段獲利</div>
+          <div class="text-base font-bold text-rose-400 mt-0.5">+$${estProfit.toLocaleString()}</div>
+        </div>
+      `;
+    }
+
+    // ==========================================
+    // 7. 分頁切換與事件綁定
+    // ==========================================
+    function switchTab(tabName) {
+      state.activeTab = tabName;
+      ["radar", "watchlist", "tools", "guide"].forEach(t => {
+        document.getElementById(`view-${t}`).classList.toggle("hidden", t !== tabName);
+      });
+      document.querySelectorAll(".nav-btn").forEach(btn => {
+        const active = btn.dataset.tab === tabName;
+        btn.className = `nav-btn flex flex-col items-center gap-0.5 py-1 transition ${
+          active ? "text-sky-400 font-semibold" : "text-slate-400 font-medium"
+        }`;
+      });
+      if (tabName === "watchlist") renderWatchlist();
+      if (tabName === "tools") renderCalculator();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    document.querySelectorAll(".nav-btn").forEach(btn => {
+      btn.addEventListener("click", () => switchTab(btn.dataset.tab));
+    });
+
+    document.querySelectorAll(".market-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        state.mode = btn.dataset.mode;
+        loadMarketData(state.mode);
+      });
+    });
+
+    document.querySelectorAll(".tier-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        state.tier = btn.dataset.tier;
+        renderRadar();
+      });
+    });
+
+    document.getElementById("searchInput").addEventListener("input", (e) => {
+      state.search = e.target.value;
+      renderRadar();
+    });
+
+    document.getElementById("sortSelect").addEventListener("change", (e) => {
+      state.sort = e.target.value;
+      renderRadar();
+    });
+
+    document.getElementById("btnRefresh").addEventListener("click", () => {
+      loadMarketData(state.mode, true);
+    });
+
+    document.getElementById("btnClearWatch").addEventListener("click", () => {
+      state.watchlist = [];
+      saveWatchlist();
+      renderWatchlist();
+      renderRadar();
+      showToast("已清空自選追蹤清單");
+    });
+
+    document.getElementById("btnCloseModal").addEventListener("click", closeDetailModal);
+    document.getElementById("modalBackdrop").addEventListener("click", closeDetailModal);
+
+    document.getElementById("btnModalStar").addEventListener("click", () => {
+      if (state.selectedStock) toggleWatch(state.selectedStock);
+    });
+
+    document.getElementById("btnSendToCalc").addEventListener("click", () => {
+      if (!state.selectedStock) return;
+      document.getElementById("calcEntry").value = state.selectedStock["收盤價"] || 100;
+      document.getElementById("calcStop").value = state.selectedStock["突破紅K低點(停損參考)"] || 95;
+      closeDetailModal();
+      switchTab("tools");
+      showToast(`已帶入 ${state.selectedStock["股票名稱"]} 價位至停損試算器`);
+    });
+
+    ["calcEntry", "calcStop", "calcLots", "calcRR"].forEach(id => {
+      document.getElementById(id).addEventListener("input", renderCalculator);
+    });
+
+    const urlInput = document.getElementById("streamlitUrlInput");
+    if (state.streamlitUrl) urlInput.value = state.streamlitUrl;
+    document.getElementById("btnOpenStreamlit").addEventListener("click", () => {
+      const u = urlInput.value.trim();
+      if (!u || !u.startsWith("http")) {
+        showToast("請先貼上您的 https://...streamlit.app 網址");
+        return;
+      }
+      try { localStorage.setItem("tw_radar_streamlit_url", u); } catch (e) {}
+      window.open(u, "_blank", "noopener,noreferrer");
+    });
+
+    // 初始化
+    renderCalculator();
+    loadMarketData(state.mode);
+  </script>
+</body>
+</html>
