@@ -1,16 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-台股進階三條件選股 & 主力籌碼成本健檢 — 手機網頁版 App (Streamlit)
-支援 iPhone / Android 瀏覽器「加入主畫面」，跨平台免安裝使用！
-核心功能（同步電腦版 v1.8）：
-1. 嚴格收盤資料保護：台灣時間 14:00 前自動排除今日盤中未定型 K 棒，只用前一個完整交易日收盤資料。
-2. 單檔/多檔個股即時深度健檢（支援輸入代號或中文股名，如：世禾、3004、億豐）。
-3. 全市場分類掃描（熱門權值股 / 上市股 / 上櫃股 / 興櫃股）＋即時進度條與預估剩餘時間。
-4. 量價主力成本（20日VWAP、60日POC）＋證交所／櫃買中心真實三大法人近20日買超與推估成本。
-5. 一鍵匯出與電腦版相同格式之 Excel 報表（含同頁顧問級實戰拆解卡片）。
+台股進階三條件選股 & 主力籌碼成本健檢 — 手機網頁版 App v2.0 (15:30 統一更新 + 雙層共享快取版)
+核心升級：
+1. 統一資料更新基準點為【每日台灣時間 15:30】：
+   - 15:30 前：強制排除今日未定型資料，嚴格採用「前一個完整交易日」收盤價與三大法人籌碼。
+   - 15:30 後：採用「今日」完整收盤價與證交所／櫃買中心最新三大法人買賣超。
+   - 介面頂部自動偵測並明確標註【目前採用之資料日期 (YYYY-MM-DD)】。
+2. 雙層極速快取架構（防多人流量爆量與 Yahoo 限流）：
+   - 第一層（主動預抓快取）：自動讀取每日 15:30 由 GitHub Actions 主動預先算好的 `daily_cache/<市場>.json`，預設參數下 0.1 秒秒開！
+   - 第二層（共享記憶體快取）：若為自訂參數或尚未預抓，首位訪客掃描完後自動共享快取給所有後續訪客，直到下一個 15:30 自動換新。
+3. 內建【投資免責聲明警語】與【選配式密碼鎖（預設關閉，需鎖定時至 Streamlit Secrets 設定 APP_PASSWORD 即可）】。
 """
 
 import io
+import os
 import re
 import ssl
 import json
@@ -23,7 +26,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 import streamlit as st
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 
 # ==========================================
@@ -56,10 +59,48 @@ st.markdown(
     .card-badge { font-size: 0.9rem; font-weight: 600; margin-bottom: 10px; }
     .sec-head { font-weight: 700; color: #1F4E78; margin-top: 8px; margin-bottom: 3px; font-size: 0.95rem; }
     .sec-body { font-size: 0.9rem; line-height: 1.55; color: #24292f; white-space: pre-line; }
+    .disclaimer-box {
+        margin-top: 24px;
+        padding: 12px 14px;
+        border-radius: 8px;
+        background-color: #f6f8fa;
+        border: 1px solid #d8dee4;
+        font-size: 0.82rem;
+        color: #57606a;
+        line-height: 1.5;
+    }
     </style>
     """,
     unsafe_allow_html=True,
 )
+
+
+# ==========================================
+# 選配密碼鎖（預設關閉，若在 Streamlit Secrets 設定 APP_PASSWORD 則自動啟用）
+# ==========================================
+def check_optional_password():
+    try:
+        secret_pwd = st.secrets.get("APP_PASSWORD", "")
+    except Exception:
+        secret_pwd = ""
+    if not secret_pwd:
+        return True
+    if st.session_state.get("auth_ok"):
+        return True
+    st.title("🔒 台股選股與主力籌碼健檢")
+    pwd_in = st.text_input("請輸入存取密碼：", type="password")
+    if st.button("登入", type="primary"):
+        if pwd_in == str(secret_pwd):
+            st.session_state["auth_ok"] = True
+            st.rerun()
+        else:
+            st.error("密碼錯誤，請重新輸入。")
+    return False
+
+
+if not check_optional_password():
+    st.stop()
+
 
 MODE_LABELS = {
     "top": "熱門權值股",
@@ -95,7 +136,7 @@ DEFAULT_TOP_STOCKS = {
 
 EXCEL_COLS = [
     "股票代碼", "股票名稱", "市場別", "資料日期", "收盤價", "單日漲幅(%)",
-    "成交量(張)", "量能倍數(倍)", "昨日帶寬(%)", "今日帶寬(%)",
+    "成交量(張)", "日成交金額(萬元)", "量能倍數(倍)", "日週轉率(%)", "昨日帶寬(%)", "今日帶寬(%)",
     "距20MA乖離(%)", "MACD柱狀體", "上影線/紅K實體比",
     "突破紅K低點(停損參考)", "20MA月線價", "20日VWAP資金成本", "60日籌碼密集區(POC)",
     "前波60日高點", "近5日法人合計(張)", "近20日法人合計(張)", "外資/投信連買天數", "法人20日買超成本",
@@ -104,19 +145,45 @@ EXCEL_COLS = [
 
 
 # ==========================================
-# 時間基準與快取資料抓取
+# 統一 15:30 更新基準與有效交易日偵測
 # ==========================================
 def get_market_data_cutoff_info():
-    """台灣時間 14:00 前排除今日盤中未定型 K 棒，14:00 後採用今日完整收盤資料"""
+    """
+    統一以台灣時間 15:30 為每日資料更新切點（收盤價＋證交所三大法人皆已公布）：
+    - 15:30 前：排除今日，採用「前一個交易日」完整收盤資訊。
+    - 15:30 後：採用「今日」最新完整收盤資訊。
+    回傳：(exclude_today, today_tw_date, period_key, now_str)
+    """
     now_tw = datetime.now(timezone(timedelta(hours=8)))
     today_date = now_tw.date()
-    if now_tw.hour < 14:
-        msg = f"台灣時間 {now_tw.strftime('%H:%M')}（未滿 14:00）：已自動排除今日盤中資料，嚴格採用【前一個完整交易日收盤資料】。"
-        return True, today_date, msg
+    is_before_1530 = (now_tw.hour, now_tw.minute) < (15, 30)
+    if is_before_1530:
+        # 15:30 前的快取鑰匙固定為「昨日日期_post1530」，完美承接昨天 15:30 後的快取！
+        prev_day = today_date - timedelta(days=1)
+        period_key = f"{prev_day.strftime('%Y-%m-%d')}_post1530"
     else:
-        tip = "（當日三大法人約 15:30 後完整公布）" if now_tw.hour < 16 else ""
-        msg = f"台灣時間 {now_tw.strftime('%H:%M')}（已過 14:00）：採用【今日({today_date})最新完整收盤資料】{tip}"
-        return False, today_date, msg
+        period_key = f"{today_date.strftime('%Y-%m-%d')}_post1530"
+    return is_before_1530, today_date, period_key, now_tw.strftime("%Y-%m-%d %H:%M")
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_effective_trading_date_str(period_key):
+    """透過台股加權指數(^TWII)自動確認實際採用之最新完整交易日期（自動略過週末與國定假日）"""
+    exclude_today, today_tw_date, _, _ = get_market_data_cutoff_info()
+    try:
+        df_idx = yf.download("^TWII", period="15d", interval="1d", progress=False)
+        if df_idx is not None and not df_idx.empty:
+            idx_dates = pd.to_datetime(df_idx.index).date
+            if exclude_today:
+                valid_dates = [d for d in idx_dates if d < today_tw_date]
+            else:
+                valid_dates = list(idx_dates)
+            if valid_dates:
+                return valid_dates[-1].strftime("%Y-%m-%d")
+    except Exception:
+        pass
+    fallback_dt = (today_tw_date - timedelta(days=1)) if exclude_today else today_tw_date
+    return fallback_dt.strftime("%Y-%m-%d")
 
 
 def _parse_num_str(val):
@@ -206,9 +273,39 @@ def fetch_tw_tickers_fast(mode="top"):
     return stock_dict if stock_dict else DEFAULT_TOP_STOCKS
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_issued_lots_map():
+    """從證交所與櫃買中心官方 OpenAPI 取得各公司發行總張數（供精準計算日週轉率 %）"""
+    lots_map = {}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    ssl_ctx = ssl._create_unverified_context()
+    for url in [
+        "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
+        "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O",
+    ]:
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=12, context=ssl_ctx) as resp:
+                data_list = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            for item in data_list:
+                code = str(item.get("公司代號") or item.get("SecuritiesCompanyCode") or "").strip()
+                if not code:
+                    continue
+                shares = _parse_num_str(item.get("已發行普通股數或TDR原股發行股數") or item.get("IssuedCommonShares") or "")
+                if shares <= 0:
+                    cap = _parse_num_str(item.get("實收資本額") or item.get("PaidInCapital") or "")
+                    if cap > 0:
+                        shares = cap / 10.0
+                if shares > 0:
+                    lots_map[code] = shares / 1000.0
+        except Exception:
+            continue
+    return lots_map
+
+
+@st.cache_data(ttl=7200, show_spinner=False)
 def fetch_insti_day_cached(exchange, yyyymmdd):
-    """快取 1 小時抓取單日上市(TWSE)或上櫃(TPEX)三大法人買賣超 JSON（單位：張）"""
+    """快取 2 小時抓取單日上市(TWSE)或上櫃(TPEX)三大法人買賣超 JSON（單位：張）"""
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     ssl_ctx = ssl._create_unverified_context()
     day_map = {}
@@ -306,7 +403,7 @@ def calc_streak(series_vals):
 
 
 def enrich_rows_with_insti(rows_list):
-    """平行抓取證交所/櫃買中心近20日三大法人資料並計算推估買超成本"""
+    """補齊證交所/櫃買中心三大法人買賣超、推估成本與日週轉率"""
     if not rows_list:
         return
 
@@ -331,6 +428,7 @@ def enrich_rows_with_insti(rows_list):
                 pair, dmap = fut.result()
                 insti_results[pair] = dmap
 
+    lots_map = fetch_issued_lots_map()
     for r in rows_list:
         ex = r.get("_exchange")
         code = r.get("股票代碼", "")
@@ -340,9 +438,25 @@ def enrich_rows_with_insti(rows_list):
         poc_60 = r["60日籌碼密集區(POC)"]
         vwap_gap = round((c_today / vwap_20 - 1.0) * 100.0, 2)
         poc_pos = "下方（形成底部換手鐵板支撐）" if c_today >= poc_60 else "上方（留意前波套牢解套賣壓）"
+
+        total_lots = lots_map.get(code, 0.0)
+        if total_lots > 0:
+            turnover_pct = round(r["成交量(張)"] / total_lots * 100.0, 2)
+            r["日週轉率(%)"] = turnover_pct
+            if turnover_pct >= 8.0:
+                to_note = f"（⚠️ 日週轉率達 {turnover_pct}% >= 8%，當沖或換手極度過熱，留意隔日震盪！）"
+            elif turnover_pct >= 0.5:
+                to_note = f"（日週轉率 {turnover_pct}%，屬健康換手點火區間）"
+            else:
+                to_note = f"（日週轉率 {turnover_pct}%，屬溫和低換手或大型權值股）"
+        else:
+            r["日週轉率(%)"] = "N/A"
+            to_note = ""
+
         vwap_line = (
             f"• 【量價主力成本】20日量價加權資金成本(VWAP)為 『{vwap_20} 元』（現價距資金成本 {vwap_gap:+.2f}%）；"
-            f"近60日最大量籌碼密集區(POC)落在 『{poc_60} 元』，位於現價{poc_pos}。"
+            f"近60日最大量籌碼密集區(POC)落在 『{poc_60} 元』，位於現價{poc_pos}；"
+            f"今日成交金額 {r['日成交金額(萬元)']} 萬元{to_note}。"
         )
 
         if not ex or not recent_prices:
@@ -483,9 +597,6 @@ def resolve_user_queries(query_str):
     return resolved, not_found
 
 
-# ==========================================
-# 核心技術指標計算與顧問級拆解
-# ==========================================
 def calc_volume_profile_poc(high_s, low_s, close_s, vol_s, lookback=60, bins=20):
     sub_h, sub_l, sub_c, sub_v = high_s.iloc[-lookback:], low_s.iloc[-lookback:], close_s.iloc[-lookback:], vol_s.iloc[-lookback:]
     p_min, p_max = float(sub_l.min()), float(sub_h.max())
@@ -605,7 +716,7 @@ def generate_deep_breakdown(info, cond_flags, extra_ctx, params):
 
     stop_pct = round((1.0 - stop_low / c_today) * 100.0, 2)
     ma_pct = round((1.0 - ma20 / c_today) * 100.0, 2)
-    overlap = f"（✨ 紅K低點與月線重疊，形成雙重支撐鐵板區！）" if abs(stop_low - ma20) / ma20 <= 0.015 else ""
+    overlap = "（✨ 紅K低點與月線重疊，形成雙重支撐鐵板區！）" if abs(stop_low - ma20) / ma20 <= 0.015 else ""
 
     if matched_count == 4 or (matched_count == 3 and not cond_flags["macd"] and days_since_cross and days_since_cross > params["macd_tolerance"]):
         act = "• 【操作建議】型態具備起漲優勢，可順勢分批布局；隔日若開高 >3% 勿過度追價。"
@@ -649,8 +760,8 @@ def evaluate_single_stock(df, params, force_report=False):
     df = df.dropna(subset=req_cols).copy()
     df = df[df["Volume"] > 0]
 
-    # 嚴格收盤保護：14:00 前剔除今日未收盤 K 棒
-    exclude_today, today_tw_date, _ = get_market_data_cutoff_info()
+    # 統一 15:30 嚴格收盤保護：15:30 前排除今日資料，採用前一個完整交易日
+    exclude_today, today_tw_date, _, _ = get_market_data_cutoff_info()
     if exclude_today and len(df) > 0:
         idx_dates = pd.to_datetime(df.index).date
         df = df[idx_dates < today_tw_date]
@@ -708,7 +819,8 @@ def evaluate_single_stock(df, params, force_report=False):
     body = c_t - o_t
     upper_s = h_t - c_t
     s_ratio = round(upper_s / body, 2) if body > 0 else 99.9
-    cond_vp = (v_t >= params["min_vol"]) and (v_t >= v_ma5_t * params["vol_ratio"]) and (body > 0) and (upper_s <= body * params["upper_shadow_ratio"])
+    amount_wan = round(c_t * v_t / 10.0, 1)
+    cond_vp = (amount_wan >= params["min_amount_wan"]) and (v_t >= v_ma5_t * params["vol_ratio"]) and (body > 0) and (upper_s <= body * params["upper_shadow_ratio"])
 
     matched = int(cond_macd) + int(cond_bb) + int(cond_ma) + int(cond_vp)
     if (not force_report) and matched < 3:
@@ -747,8 +859,8 @@ def evaluate_single_stock(df, params, force_report=False):
     if not cond_vp:
         if body <= 0:
             vp_miss = "今日非紅K(收黑或平盤)"
-        elif v_t < params["min_vol"]:
-            vp_miss = f"成交量({int(v_t)}張)未達{params['min_vol']}張門檻"
+        elif amount_wan < params["min_amount_wan"]:
+            vp_miss = f"日成交金額({amount_wan}萬元)未達{params['min_amount_wan']}萬元門檻"
         elif v_t < v_ma5_t * params["vol_ratio"]:
             vp_miss = f"量能倍數({v_t/v_ma5_t:.2f}倍)未達{params['vol_ratio']}倍"
         else:
@@ -774,7 +886,9 @@ def evaluate_single_stock(df, params, force_report=False):
         "收盤價": round(c_t, 2),
         "單日漲幅(%)": round((c_t / c_p - 1.0) * 100.0, 2),
         "成交量(張)": int(round(v_t)),
+        "日成交金額(萬元)": amount_wan,
         "量能倍數(倍)": round(v_t / v_ma5_t, 2),
+        "日週轉率(%)": "",
         "昨日帶寬(%)": round(bw_p, 2),
         "今日帶寬(%)": round(bw_t, 2),
         "距20MA乖離(%)": round(bias_t, 2),
@@ -808,16 +922,105 @@ def evaluate_single_stock(df, params, force_report=False):
         return "CUSTOM", info
     if matched == 4:
         return "FULL", info
-    if matched == 3 and cond_ma and body > 0 and v_t >= params["min_vol"]:
+    if matched == 3 and cond_ma and body > 0 and amount_wan >= params["min_amount_wan"]:
         return "NEAR", info
     return None, None
 
 
 # ==========================================
-# 匯出與電腦版相同格式之 Excel (記憶體位元流)
+# 雙層快取：第一層讀取每日 15:30 預抓檔，第二層為全體訪客共享記憶體快取
 # ==========================================
+def is_default_params(mode_choice, scan_params):
+    expected_amt = 500.0 if mode_choice == "emerging" else 2000.0
+    return (
+        scan_params["macd_tolerance"] == 3
+        and abs(scan_params["max_pre_bw"] - 15.0) < 1e-6
+        and abs(scan_params["max_bias20"] - 8.0) < 1e-6
+        and abs(scan_params["min_amount_wan"] - expected_amt) < 1e-6
+        and abs(scan_params["vol_ratio"] - 1.5) < 1e-6
+        and abs(scan_params["upper_shadow_ratio"] - 0.5) < 1e-6
+    )
+
+
+def try_load_precomputed_cache(mode_choice, effective_date_str):
+    """嘗試讀取由每日 15:30 GitHub Actions 主動預抓產生的 JSON 靜態快取檔"""
+    cache_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "daily_cache", f"{mode_choice}.json")
+    if not os.path.exists(cache_path):
+        return None
+    try:
+        with open(cache_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if payload.get("data_date") == effective_date_str:
+            return payload
+    except Exception:
+        pass
+    return None
+
+
+@st.cache_data(ttl=43200, show_spinner=False)
+def run_shared_market_scan_cached(mode_choice, period_key, param_items_tuple):
+    """
+    全體訪客共享快取：綁定 (市場別, 15:30切點日期鑰匙, 參數組合)。
+    同一時段內首位訪客掃描後，所有後續訪客在 0.1 秒內直接共享結果，直到下一個 15:30 自動換新！
+    """
+    scan_params = dict(param_items_tuple)
+    stock_dict = fetch_tw_tickers_fast(mode=mode_choice)
+    tickers = list(stock_dict.keys())
+    total = len(tickers)
+    market_title = MODE_LABELS[mode_choice]
+
+    full_list, near_list = [], []
+    valid_cnt = 0
+    batch_size = 40
+
+    for start_i in range(0, total, batch_size):
+        batch = tickers[start_i : start_i + batch_size]
+        try:
+            data = yf.download(tickers=batch, period="5mo", interval="1d", group_by="ticker", auto_adjust=False, threads=True, progress=False)
+        except Exception:
+            continue
+
+        for sym in batch:
+            try:
+                sub_df = data if len(batch) == 1 else (data[sym] if isinstance(data.columns, pd.MultiIndex) and sym in data.columns.get_level_values(0) else None)
+                if sub_df is None or sub_df.dropna(how="all").empty:
+                    continue
+                valid_cnt += 1
+                status, res = evaluate_single_stock(sub_df, scan_params, force_report=False)
+                if status in ("FULL", "NEAR") and res:
+                    code = sym.replace(".TW", "").replace(".TWO", "")
+                    name, m_lbl = stock_dict.get(sym, ("", market_title))
+                    row = {"股票代碼": code, "股票名稱": name, "市場別": m_lbl}
+                    row.update(res)
+                    (full_list if status == "FULL" else near_list).append(row)
+            except Exception:
+                continue
+        time.sleep(0.08)
+
+    near_top = sorted(near_list, key=lambda x: x["單日漲幅(%)"], reverse=True)[:30]
+    full_sorted = sorted(full_list, key=lambda x: x["今日帶寬(%)"])
+
+    if full_sorted or near_top:
+        enrich_rows_with_insti(full_sorted + near_top)
+
+    data_date = ""
+    if full_sorted:
+        data_date = full_sorted[0]["資料日期"]
+    elif near_top:
+        data_date = near_top[0]["資料日期"]
+
+    return {
+        "full_sorted": full_sorted,
+        "near_top": near_top,
+        "valid_cnt": valid_cnt,
+        "total": total,
+        "data_date": data_date,
+        "generated_at": datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M"),
+        "source": "shared_live_cache",
+    }
+
+
 def build_excel_bytes(sheets_spec, summary_rows):
-    """產出可供手機直接下載的 Excel 檔案位元流（含同頁下方診斷卡片）"""
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         for sheet_name, rows_data, title_label in sheets_spec:
@@ -835,13 +1038,12 @@ def build_excel_bytes(sheets_spec, summary_rows):
                 for c_i in range(1, ws.max_column + 1):
                     cell = ws.cell(row=r_i, column=c_i)
                     if r_i == 1:
-                        cell.fill = chip_fill if 16 <= c_i <= 22 else header_fill
+                        cell.fill = chip_fill if 18 <= c_i <= 24 else header_fill
                         cell.font = h_font
                         cell.alignment = Alignment(vertical="center", horizontal="center")
                     else:
                         cell.font = d_font
 
-            # 同頁下方寫入診斷卡片
             cur = ws.max_row + 3
             max_c = len(EXCEL_COLS)
             sec_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
@@ -875,7 +1077,7 @@ def build_excel_bytes(sheets_spec, summary_rows):
                 cur += 1
 
             for c_i in range(1, max_c + 1):
-                ws.column_dimensions[get_column_letter(c_i)].width = 18 if c_i < 23 else 48
+                ws.column_dimensions[get_column_letter(c_i)].width = 18 if c_i < 25 else 48
 
         pd.DataFrame(summary_rows, columns=["項目", "數值 / 設定"]).to_excel(writer, sheet_name="掃描統計與參數", index=False)
 
@@ -883,17 +1085,13 @@ def build_excel_bytes(sheets_spec, summary_rows):
     return buf.getvalue()
 
 
-# ==========================================
-# 手機友善診斷卡片渲染元件
-# ==========================================
 def render_mobile_stock_card(row):
     dr = row["_deep_report"]
     badge = dr["rating_badge"]
     css_cls = "card-star" if "★★★" in badge else "card-warn" if ("警戒" in badge or "✖" in badge) else "card-watch"
 
-    # 關鍵數字 4 格卡片 (手機上自動 2x2 排列)
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("收盤價", f"{row['收盤價']}", f"{row['單日漲幅(%)']:+.2f}%")
+    c1.metric("收盤價", f"{row['收盤價']}", f"{row['單日漲幅(%)']:+.2f}% | 週轉 {row['日週轉率(%)']}%")
     c2.metric("20日VWAP成本", f"{row['20日VWAP資金成本']}", f"乖離 {row['距20MA乖離(%)']}%")
     c3.metric("法人20日成本", f"{row['法人20日買超成本']}", f"5日 {row['近5日法人合計(張)']}張")
     c4.metric("短線停損 / 月線", f"{row['突破紅K低點(停損參考)']}", f"20MA {row['20MA月線價']}")
@@ -916,19 +1114,31 @@ def render_mobile_stock_card(row):
 
 
 # ==========================================
-# 主介面排版 (手機優先)
+# 主介面排版 (統一 15:30 基準提示 + 資料日期標註)
 # ==========================================
 st.title("📈 台股選股 & 主力籌碼健檢")
-_, _, cutoff_msg = get_market_data_cutoff_info()
-st.info(f"🕒 {cutoff_msg}")
 
-# 參數設定收合區（預設收合讓手機畫面乾淨）
+is_before_1530, today_tw_date, period_key, now_str = get_market_data_cutoff_info()
+effective_date_str = get_effective_trading_date_str(period_key)
+
+if is_before_1530:
+    st.info(
+        f"📅 **目前採用資料日期：`{effective_date_str}`**（台灣時間 {now_str}）\n\n"
+        f"🕒 **提醒**：本工具每日 **15:30** 統一更新（同步收盤價與證交所三大法人籌碼）；"
+        f"**15:30 前抓取的資料為前一個交易日之完整收盤資訊**，不受盤中跳動影響。"
+    )
+else:
+    st.success(
+        f"📅 **目前採用資料日期：`{effective_date_str}`**（台灣時間 {now_str}）\n\n"
+        f"🕒 已過每日 **15:30** 更新時段，採用最新完整收盤價與三大法人籌碼資料。"
+    )
+
 with st.expander("⚙️ 調整四大選股條件參數（預設已為進階實戰最佳值）", expanded=False):
     col_a, col_b = st.columns(2)
     macd_tol = col_a.number_input("MACD 翻紅容錯天數", min_value=1, max_value=10, value=3)
     max_pre_bw = col_b.number_input("突破前布林帶寬上限(%)", min_value=5.0, max_value=50.0, value=15.0, step=1.0)
     max_bias20 = col_a.number_input("距 20MA 最大乖離率(%)", min_value=2.0, max_value=30.0, value=8.0, step=1.0)
-    min_vol = col_b.number_input("最低成交量門檻(張)", min_value=0, max_value=10000, value=500, step=100)
+    min_amount_wan = col_b.number_input("最低日成交金額(萬元，0=不限)", min_value=0, max_value=50000, value=2000, step=500)
     vol_ratio = col_a.number_input("攻擊量倍數(較前5日均量)", min_value=1.0, max_value=5.0, value=1.5, step=0.1)
     upper_shadow = col_b.number_input("上影線/紅K實體比例上限", min_value=0.1, max_value=2.0, value=0.5, step=0.1)
 
@@ -936,7 +1146,7 @@ params = {
     "fast_len": 12, "slow_len": 26, "sig_len": 9, "macd_tolerance": int(macd_tol),
     "bb_len": 20, "bb_k": 2.0, "max_pre_bw": float(max_pre_bw),
     "ma_len": 20, "ma_up_bars": 1, "max_bias20": float(max_bias20),
-    "min_vol": int(min_vol), "vol_ratio": float(vol_ratio), "upper_shadow_ratio": float(upper_shadow),
+    "min_amount_wan": float(min_amount_wan), "vol_ratio": float(vol_ratio), "upper_shadow_ratio": float(upper_shadow),
 }
 
 tab1, tab2 = st.tabs(["🩺 單檔／自選個股即時健檢", "🚀 全市場選股掃描"])
@@ -951,7 +1161,7 @@ with tab1:
         if not query_text.strip():
             st.warning("請先輸入股票代號或名稱！")
         else:
-            with st.spinner("正在載入市場代碼表、抓取日 K 與證交所／櫃買中心三大法人買賣超..."):
+            with st.spinner("正在載入市場代碼表、抓取完整收盤日 K 與證交所／櫃買中心三大法人買賣超..."):
                 resolved, not_found = resolve_user_queries(query_text)
                 if not_found:
                     st.warning(f"找不到相符標的：{', '.join(not_found)}")
@@ -974,14 +1184,13 @@ with tab1:
 
                 if results:
                     enrich_rows_with_insti(results)
-                    st.success(f"✅ 完成 {len(results)} 檔個股深度健檢！")
+                    st.success(f"✅ 完成 {len(results)} 檔個股深度健檢！（資料日期：{results[0]['資料日期']}）")
                     for r in results:
                         render_mobile_stock_card(r)
 
-                    # 提供 Excel 完整報告下載
                     excel_data = build_excel_bytes(
                         [("個股深度健檢報告", results, "手動指定個股四條件＋主力成本深度健檢")],
-                        [("產出時間", datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M")), ("健檢檔數", f"{len(results)} 檔")],
+                        [("資料日期", results[0]["資料日期"]), ("產出時間", now_str), ("健檢檔數", f"{len(results)} 檔")],
                     )
                     tag = f"{results[0]['股票代碼']}{results[0]['股票名稱']}" if len(results) == 1 else f"自選{len(results)}檔"
                     dt_tag = datetime.now(timezone(timedelta(hours=8))).strftime("%Y%m%d_%H%M")
@@ -992,70 +1201,53 @@ with tab1:
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     )
 
-# ---------- 分頁 2：全市場選股掃描 ----------
+# ---------- 分頁 2：全市場選股掃描（支援 15:30 預抓快取秒開＋訪客共享快取） ----------
 with tab2:
     mode_choice = st.radio(
         "選擇掃描市場範圍：",
         options=["top", "twse", "tpex", "emerging"],
         format_func=lambda k: {
-            "top": "熱門權值股 (64檔，約10秒)",
-            "twse": "上市股 (~1000檔，約1.5分鐘)",
-            "tpex": "上櫃股 (~800檔，約1分鐘)",
-            "emerging": "興櫃股 (~350檔，約30秒)",
+            "top": "熱門權值股 (64檔)",
+            "twse": "上市股 (~1000檔)",
+            "tpex": "上櫃股 (~800檔)",
+            "emerging": "興櫃股 (~350檔)",
         }[k],
         horizontal=True,
     )
 
-    if st.button("🚀 開始掃描選股", type="primary"):
+    if mode_choice == "emerging":
+        st.caption("💡 提醒：掃描【興櫃股】時，若成交金額門檻維持預設 2000 萬元，程式會自動降為 **500 萬元** 以免誤殺興櫃績優股。")
+
+    if st.button("🚀 查看／掃描選股結果（自動套用每日 15:30 共享快取）", type="primary"):
         market_title = MODE_LABELS[mode_choice]
-        stock_dict = fetch_tw_tickers_fast(mode=mode_choice)
-        tickers = list(stock_dict.keys())
-        total = len(tickers)
+        scan_params = dict(params)
+        if mode_choice == "emerging" and scan_params["min_amount_wan"] == 2000.0:
+            scan_params["min_amount_wan"] = 500.0
 
-        pbar = st.progress(0.0, text=f"準備掃描【{market_title}】共 {total} 檔...")
-        full_list, near_list = [], []
-        valid_cnt = 0
-        batch_size = 40
-        t0 = time.time()
+        # 第一層：優先嘗試秒載每日 15:30 主動預抓之靜態快取檔
+        result_pkg = None
+        if is_default_params(mode_choice, scan_params):
+            result_pkg = try_load_precomputed_cache(mode_choice, effective_date_str)
 
-        for start_i in range(0, total, batch_size):
-            batch = tickers[start_i : start_i + batch_size]
-            end_i = min(start_i + batch_size, total)
-            try:
-                data = yf.download(tickers=batch, period="5mo", interval="1d", group_by="ticker", auto_adjust=False, threads=True, progress=False)
-            except Exception:
-                continue
+        # 第二層：若無預抓檔或使用者自訂參數，則呼叫全體訪客共享記憶體快取（首次執行需數十秒，後續訪客秒開）
+        if result_pkg is None:
+            with st.spinner(f"正在讀取【{market_title}】共享快取或執行首次掃描（完成後將自動快取至下一個 15:30，供後續使用者秒開）..."):
+                result_pkg = run_shared_market_scan_cached(
+                    mode_choice, period_key, tuple(sorted(scan_params.items()))
+                )
 
-            for sym in batch:
-                try:
-                    sub_df = data if len(batch) == 1 else (data[sym] if isinstance(data.columns, pd.MultiIndex) and sym in data.columns.get_level_values(0) else None)
-                    if sub_df is None or sub_df.dropna(how="all").empty:
-                        continue
-                    valid_cnt += 1
-                    status, res = evaluate_single_stock(sub_df, params, force_report=False)
-                    if status in ("FULL", "NEAR") and res:
-                        code = sym.replace(".TW", "").replace(".TWO", "")
-                        name, m_lbl = stock_dict.get(sym, ("", market_title))
-                        row = {"股票代碼": code, "股票名稱": name, "市場別": m_lbl}
-                        row.update(res)
-                        (full_list if status == "FULL" else near_list).append(row)
-                except Exception:
-                    continue
+        full_sorted = result_pkg["full_sorted"]
+        near_top = result_pkg["near_top"]
+        valid_cnt = result_pkg["valid_cnt"]
+        total = result_pkg["total"]
+        actual_date = result_pkg.get("data_date") or effective_date_str
+        gen_time = result_pkg.get("generated_at", now_str)
+        src_badge = "⚡ 來自每日 15:30 自動預抓快取（極速秒載）" if result_pkg.get("source") == "daily_precomputed" else "⚡ 已寫入全體訪客共享快取（保留至下個 15:30）"
 
-            elapsed = time.time() - t0
-            eta = int(round((elapsed / end_i) * (total - end_i))) if end_i < total else 0
-            pbar.progress(end_i / total, text=f"📊 進度 {end_i}/{total} 檔 ({end_i/total*100:.0f}%) ｜ 已用 {int(elapsed)}秒 ｜ 預估剩餘 {eta}秒")
-            time.sleep(0.1)
-
-        near_top = sorted(near_list, key=lambda x: x["單日漲幅(%)"], reverse=True)[:30]
-        full_sorted = sorted(full_list, key=lambda x: x["今日帶寬(%)"])
-
-        if full_sorted or near_top:
-            pbar.progress(1.0, text="🏦 正在為入選股補抓證交所／櫃買中心三大法人買超與成本...")
-            enrich_rows_with_insti(full_sorted + near_top)
-
-        pbar.empty()
-        st.success(f"🎉 【{market_title}】掃描完成！（讀取 {valid_cnt}/{total} 檔）完全符合：{len(full_sorted)} 檔 ｜ 準突破觀察：{len(near_top)} 檔")
+        st.success(
+            f"🎉 【{market_title}】資料日期：**{actual_date}** ｜ 掃描 {valid_cnt}/{total} 檔 ｜ "
+            f"完全符合：{len(full_sorted)} 檔 ｜ 準突破觀察：{len(near_top)} 檔\n\n{src_badge}（快取建立時間：{gen_time}）"
+        )
 
         st.subheader(f"🎯 4 項條件完全符合（{len(full_sorted)} 檔）")
         if full_sorted:
@@ -1078,24 +1270,27 @@ with tab2:
             ],
             [
                 ("掃描市場範圍", market_title),
-                ("產出時間", datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M")),
+                ("資料日期", actual_date),
+                ("快取建立時間", gen_time),
                 ("成功讀取檔數", f"{valid_cnt}/{total}"),
                 ("完全符合檔數", f"{len(full_sorted)} 檔"),
                 ("準突破觀察檔數", f"{len(near_top)} 檔"),
             ],
         )
-        dt_tag = datetime.now(timezone(timedelta(hours=8))).strftime("%Y%m%d_%H%M")
+        dt_tag = actual_date.replace("-", "")
         st.download_button(
-            label=f"📥 下載【{market_title}】Excel 完整報表",
+            label=f"📥 下載【{market_title}】Excel 完整報表 ({actual_date})",
             data=excel_bytes,
             file_name=f"進階選股結果_{market_title}_{dt_tag}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
-# 底部指標判讀速查
+# 底部指標判讀速查與免責聲明
 with st.expander("📖 各欄位指標意義與數值高低判讀指南"):
     st.markdown(
         """
+        - **最低日成交金額（上市/上櫃預設 `2,000 萬`、興櫃 `500 萬`）**：兼顧高價股與小型績優股的流動性底線，避免買到滑價冷門股。
+        - **日週轉率（量佔股本 %）**：中小型股起漲甜美區約 `0.5% ~ 5%`；若單日衝破 **`8%`** 以上會亮出過熱警戒。
         - **量能倍數（甜美區 `1.5 ~ 3.5 倍`）**：代表主力資金進場點火；並非愈高愈好，暴增 5~10 倍易伴隨隔日沖倒貨。
         - **昨日帶寬（愈低愈好 `<10%` 極佳）與今日帶寬放大**：壓縮蓄力後正式釋放波動；昨日帶寬若已 >20% 易追在高點。
         - **距 20MA 乖離（甜美區 `2% ~ 6%`）**：愈低離月線支撐愈近、下檔風險愈低。
@@ -1104,3 +1299,14 @@ with st.expander("📖 各欄位指標意義與數值高低判讀指南"):
         - **法人 20 日買超成本**：依證交所／櫃買中心真實每日買超加權推算，現價緊貼成本上方 0%~5% 時主力最有意願護盤。
         """
     )
+
+st.markdown(
+    """
+    <div class="disclaimer-box">
+        ⚠️ <b>免責聲明</b>：本工具僅針對公開市場歷史價量資料與證交所／櫃買中心三大法人籌碼進行自動化統計分析，
+        所有指標數據與文字拆解均為程式規則推算結果，<b>不構成任何形式之投資買賣建議或投顧推薦</b>。
+        股市投資具有風險，使用者應獨立判斷並審慎評估自身風險承受能力，盈虧自負。
+    </div>
+    """,
+    unsafe_allow_html=True,
+)

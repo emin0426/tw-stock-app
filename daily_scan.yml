@@ -1,0 +1,38 @@
+name: 每日15點30分自動預抓台股選股快取
+
+on:
+  schedule:
+    # 台灣時間 (UTC+8) 週一至週五 15:35 = UTC 07:35（確保證交所三大法人已完整公布）
+    - cron: '35 7 * * 1-5'
+  workflow_dispatch: # 支援隨時在 GitHub 網頁點「Run workflow」手動立即測試執行
+
+permissions:
+  contents: write
+
+jobs:
+  precompute:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 下載專案程式碼
+        uses: actions/checkout@v4
+
+      - name: 2. 設定 Python 3.11 環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 3. 安裝必要套件
+        run: |
+          pip install -r requirements.txt
+
+      - name: 4. 執行全市場選股與三大法人籌碼預抓
+        run: |
+          python precompute_daily.py
+
+      - name: 5. 將最新每日快取寫回 GitHub（自動觸發手機 App 秒載更新）
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add daily_cache/
+          git diff --staged --quiet || git commit -m "chore: 每日15:30自動更新台股選股與法人籌碼快取"
+          git push
