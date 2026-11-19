@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-台股進階三條件選股 & 主力籌碼成本健檢 — 手機網頁版 App v2.0 (15:30 統一更新 + 雙層共享快取版)
+台股進階三條件選股 & 主力籌碼成本健檢 — 手機網頁版 App v2.3 (15:30 統一更新 + 雙層共享快取版)
 核心升級：
 1. 統一資料更新基準點為【每日台灣時間 15:30】：
    - 15:30 前：強制排除今日未定型資料，嚴格採用「前一個完整交易日」收盤價與三大法人籌碼。
@@ -26,6 +26,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 import streamlit as st
+import altair as alt
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 
@@ -135,7 +136,7 @@ DEFAULT_TOP_STOCKS = {
 }
 
 EXCEL_COLS = [
-    "股票代碼", "股票名稱", "市場別", "資料日期", "收盤價", "單日漲幅(%)",
+    "股票代碼", "股票名稱", "市場別", "營業概況(主力業務)", "資料日期", "收盤價", "單日漲幅(%)",
     "成交量(張)", "日成交金額(萬元)", "量能倍數(倍)", "日週轉率(%)", "昨日帶寬(%)", "今日帶寬(%)",
     "距20MA乖離(%)", "MACD柱狀體", "上影線/紅K實體比",
     "突破紅K低點(停損參考)", "20MA月線價", "20日VWAP資金成本", "60日籌碼密集區(POC)",
@@ -273,15 +274,60 @@ def fetch_tw_tickers_fast(mode="top"):
     return stock_dict if stock_dict else DEFAULT_TOP_STOCKS
 
 
+TW_INDUSTRY_MAP = {
+    "01": "水泥工業", "02": "食品工業", "03": "塑膠工業", "04": "紡織纖維",
+    "05": "電機機械", "06": "電器電纜", "07": "化學生技醫療", "08": "玻璃陶瓷",
+    "09": "造紙工業", "10": "鋼鐵工業", "11": "橡膠工業", "12": "汽車工業",
+    "13": "電子工業", "14": "建材營造", "15": "航運業", "16": "觀光餐旅",
+    "17": "金融保險", "18": "貿易百貨", "19": "綜合", "20": "其他",
+    "21": "化學工業", "22": "生技醫療業", "23": "油電燃氣業", "24": "半導體業",
+    "25": "電腦及週邊設備業", "26": "光電業", "27": "通信網路業", "28": "電子零組件業",
+    "29": "電子通路業", "30": "資訊服務業", "31": "其他電子業", "32": "文化創意業",
+    "33": "農業科技業", "34": "電子商務", "35": "綠能環保", "36": "數位雲端",
+    "37": "運動休閒", "38": "居家生活",
+}
+
+
+def _extract_business_info(item):
+    raw_ind = str(item.get("產業別") or item.get("IndustryCategory") or item.get("Industry") or "").strip()
+    ind_name = TW_INDUSTRY_MAP.get(raw_ind.zfill(2), raw_ind) if raw_ind.isdigit() else raw_ind
+
+    biz = ""
+    for k in ("主要經營業務", "主要業務", "營業項目", "MainBusiness", "BusinessDescription", "MajorBusiness"):
+        v = str(item.get(k) or "").strip()
+        if v and v not in ("--", "-", "N/A"):
+            biz = v
+            break
+    if not biz:
+        for k, v in item.items():
+            kl = str(k).lower()
+            if ("業務" in str(k) or "business" in kl) and str(v).strip() not in ("", "--", "-", "N/A"):
+                biz = str(v).strip()
+                break
+
+    biz = re.sub(r"\s+", " ", biz).strip()
+    if len(biz) > 95:
+        biz = biz[:92] + "..."
+
+    if ind_name and biz:
+        return f"【{ind_name}】{biz}"
+    if ind_name:
+        return f"【{ind_name}】"
+    if biz:
+        return biz
+    return ""
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
-def fetch_issued_lots_map():
-    """從證交所與櫃買中心官方 OpenAPI 取得各公司發行總張數（供精準計算日週轉率 %）"""
-    lots_map = {}
+def fetch_company_profile_map():
+    """從證交所與櫃買中心官方 OpenAPI 一次取得各公司發行總張數與營業概況(主力業務)"""
+    profile_map = {}
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     ssl_ctx = ssl._create_unverified_context()
     for url in [
         "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
         "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O",
+        "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_R",
     ]:
         try:
             req = urllib.request.Request(url, headers=headers)
@@ -296,11 +342,12 @@ def fetch_issued_lots_map():
                     cap = _parse_num_str(item.get("實收資本額") or item.get("PaidInCapital") or "")
                     if cap > 0:
                         shares = cap / 10.0
-                if shares > 0:
-                    lots_map[code] = shares / 1000.0
+                lots = (shares / 1000.0) if shares > 0 else 0.0
+                biz_desc = _extract_business_info(item)
+                profile_map[code] = {"lots": lots, "business": biz_desc}
         except Exception:
             continue
-    return lots_map
+    return profile_map
 
 
 @st.cache_data(ttl=7200, show_spinner=False)
@@ -428,7 +475,7 @@ def enrich_rows_with_insti(rows_list):
                 pair, dmap = fut.result()
                 insti_results[pair] = dmap
 
-    lots_map = fetch_issued_lots_map()
+    profile_map = fetch_company_profile_map()
     for r in rows_list:
         ex = r.get("_exchange")
         code = r.get("股票代碼", "")
@@ -439,7 +486,19 @@ def enrich_rows_with_insti(rows_list):
         vwap_gap = round((c_today / vwap_20 - 1.0) * 100.0, 2)
         poc_pos = "下方（形成底部換手鐵板支撐）" if c_today >= poc_60 else "上方（留意前波套牢解套賣壓）"
 
-        total_lots = lots_map.get(code, 0.0)
+        prof = profile_map.get(code, {})
+        total_lots = prof.get("lots", 0.0)
+        biz_text = prof.get("business", "")
+        if not biz_text:
+            # 若 OpenAPI 無資料，退回嘗試抓取 Yahoo Finance 產業別
+            try:
+                suf = ".TW" if ex == "TWSE" else ".TWO"
+                yf_info = yf.Ticker(f"{code}{suf}").info or {}
+                ind_en = yf_info.get("industry") or yf_info.get("sector") or ""
+                biz_text = f"【{ind_en}】" if ind_en else "尚無公開營業概況資料"
+            except Exception:
+                biz_text = "尚無公開營業概況資料"
+        r["營業概況(主力業務)"] = biz_text
         if total_lots > 0:
             turnover_pct = round(r["成交量(張)"] / total_lots * 100.0, 2)
             r["日週轉率(%)"] = turnover_pct
@@ -837,6 +896,18 @@ def evaluate_single_stock(df, params, force_report=False):
         for dt, p in zip(df.index[-20:], tp.iloc[-20:])
     ]
 
+    # 建構近 30 個交易日價量圖表序列（供 PWA 與 Streamlit 繪製雙圖表）
+    vol_ma5_chart = vol_lots.rolling(5).mean()
+    n_pts = min(30, len(df))
+    chart_30d = {
+        "dates": [dt.strftime("%Y-%m-%d") if hasattr(dt, "strftime") else str(dt)[:10] for dt in df.index[-n_pts:]],
+        "close": [round(float(x), 2) for x in close.iloc[-n_pts:]],
+        "ma20": [round(float(x), 2) if not np.isnan(float(x)) else None for x in ma.iloc[-n_pts:]],
+        "vol": [int(round(float(x))) for x in vol_lots.iloc[-n_pts:]],
+        "vol_ma5": [int(round(float(x))) if not np.isnan(float(x)) else None for x in vol_ma5_chart.iloc[-n_pts:]],
+        "up": [bool(float(c) >= float(o)) for c, o in zip(close.iloc[-n_pts:], open_p.iloc[-n_pts:])],
+    }
+
     bb_miss = ""
     if not cond_bb:
         if bw_p > params["max_pre_bw"]:
@@ -882,6 +953,7 @@ def evaluate_single_stock(df, params, force_report=False):
     dt_str = last_dt.strftime("%Y-%m-%d") if hasattr(last_dt, "strftime") else str(last_dt)[:10]
 
     info = {
+        "營業概況(主力業務)": "",
         "資料日期": dt_str,
         "收盤價": round(c_t, 2),
         "單日漲幅(%)": round((c_t / c_p - 1.0) * 100.0, 2),
@@ -916,6 +988,7 @@ def evaluate_single_stock(df, params, force_report=False):
     info["實戰型態定調與優先級"] = dr["one_line_summary"]
     info["_deep_report"] = dr
     info["_recent_20_prices"] = recent_20
+    info["_chart_30d"] = chart_30d
     info["_matched_count"] = matched
 
     if force_report:
@@ -1020,11 +1093,163 @@ def run_shared_market_scan_cached(mode_choice, period_key, param_items_tuple):
     }
 
 
+
+def evaluate_holding_position(df, code, name, market_lbl, buy_price, lots, buy_date_str=""):
+    """三段式自動移動停利／停損引擎（與電腦版 v2.3 規則 100% 同步）"""
+    if df is None or df.empty:
+        return None
+    if isinstance(df.columns, pd.MultiIndex):
+        df = df.copy()
+        df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
+
+    req_cols = ["Open", "High", "Low", "Close", "Volume"]
+    for c in req_cols:
+        if c not in df.columns:
+            return None
+    df = df.dropna(subset=req_cols).copy()
+    df = df[df["Volume"] > 0]
+
+    exclude_today, today_tw_date, _, _ = get_market_data_cutoff_info()
+    if exclude_today and len(df) > 0:
+        idx_dates = pd.to_datetime(df.index).date
+        df = df[idx_dates < today_tw_date]
+
+    if len(df) < 25:
+        return None
+
+    close = pd.Series(df["Close"].squeeze()).astype(float)
+    open_p = pd.Series(df["Open"].squeeze()).astype(float)
+    high = pd.Series(df["High"].squeeze()).astype(float)
+    low = pd.Series(df["Low"].squeeze()).astype(float)
+
+    ma10 = close.rolling(10).mean()
+    ma20 = close.rolling(20).mean()
+    prev_close = close.shift(1)
+    tr = pd.concat([(high - low), (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+    atr14 = tr.rolling(14).mean()
+
+    c_t, l_t = float(close.iloc[-1]), float(low.iloc[-1])
+    ma10_t, ma20_t = round(float(ma10.iloc[-1]), 2), round(float(ma20.iloc[-1]), 2)
+    atr_t = float(atr14.iloc[-1]) if not np.isnan(float(atr14.iloc[-1])) else (c_t * 0.03)
+
+    days_below_ma20 = 0
+    for flag in reversed((close < ma20).values):
+        if bool(flag):
+            days_below_ma20 += 1
+        else:
+            break
+
+    idx_dates_str = [dt.strftime("%Y-%m-%d") if hasattr(dt, "strftime") else str(dt)[:10] for dt in df.index]
+    init_low = l_t
+    period_high = float(high.iloc[-20:].max())
+
+    if buy_date_str and buy_date_str.strip():
+        b_clean = buy_date_str.strip().replace("/", "-")
+        m_idx = [i for i, ds in enumerate(idx_dates_str) if ds >= b_clean]
+        if m_idx:
+            init_low = float(low.iloc[m_idx[0]])
+            period_high = float(high.iloc[m_idx[0]:].max())
+    else:
+        red_mask = (close.iloc[-10:] > open_p.iloc[-10:]).values
+        red_lows = low.iloc[-10:].values[red_mask]
+        if len(red_lows) > 0:
+            init_low = float(red_lows[-1])
+
+    cost_amt = buy_price * lots * 1000.0
+    mkt_val = c_t * lots * 1000.0
+    est_fee_tax = cost_amt * 0.001425 + mkt_val * (0.001425 + 0.003)
+    net_pnl = int(round(mkt_val - cost_amt - est_fee_tax))
+    pnl_pct = round((c_t / buy_price - 1.0) * 100.0, 2)
+
+    hard_stop_7 = round(buy_price * 0.93, 2)
+    breakeven_price = round(buy_price * 1.006, 2)
+    atr_trail_price = round(period_high - 2.0 * atr_t, 2)
+
+    if pnl_pct < 5.0:
+        stage = "🛡️ 第一階段：剛進場防守期 (<+5%)"
+        main_stop = round(max(init_low, hard_stop_7), 2)
+        lock_line = "尚未進入鎖利期"
+        if c_t < main_stop:
+            alert = f"🚨 觸發初始停損！收盤({c_t})已跌破防守價({main_stop})"
+            tip = f"已跌破第一階段防守線（紅K低點 {round(init_low,2)} / -7%硬停損 {hard_stop_7} 取高），建議依紀律執行停損。"
+        else:
+            gap = round((1.0 - main_stop / c_t) * 100.0, 2)
+            alert = f"✅ 持有防守中（距停損緩衝 {gap}%）"
+            tip = f"嚴守初始停損 『{main_stop} 元』（突破紅K低點 {round(init_low,2)} 與 -7% 硬停損 {hard_stop_7} 取高者）。"
+    elif pnl_pct <= 15.0:
+        stage = "🔒 第二階段：脫離成本保本期 (+5%~+15%)"
+        main_stop = round(max(breakeven_price, ma20_t), 2)
+        lock_line = ma10_t
+        if c_t < main_stop:
+            alert = f"⚠️ 觸及保本／月線防線({main_stop})，建議保本出場"
+            tip = f"股價回測保本線 『{main_stop} 元』（含稅費保本 {breakeven_price} 與 20MA {ma20_t} 取高），建議保本離場。"
+        else:
+            alert = f"✅ 已鎖定保本不賠！（移動防線 {main_stop} 元）"
+            tip = f"停損已自動上移至 『{main_stop} 元』（保本價 {breakeven_price} 與上揚月線 {ma20_t} 取高），安心續抱等主升段。"
+    else:
+        stage = "🚀 第三階段：主升段奔跑停利期 (>+15%)"
+        lock_line = round(max(ma10_t, atr_trail_price), 2)
+        main_stop = ma20_t
+        if days_below_ma20 >= 3:
+            alert = f"🚨 觸發波段全出！已連破 20MA ({ma20_t}) 達 {days_below_ma20} 日"
+            tip = "已符合「跌破 20MA 三日站不回」出場條件，建議獲利了結全出！"
+        elif c_t < lock_line:
+            alert = f"⚠️ 跌破減碼鎖利線({lock_line})，建議先減碼一半"
+            tip = f"跌破減碼鎖利線 『{lock_line} 元』（10MA {ma10_t} / 高點-2ATR {atr_trail_price} 取高），先鎖利一半、剩餘守 20MA ({ma20_t})。"
+        else:
+            alert = f"🔥 主升段強勢奔跑中！（減碼線 {lock_line} / 月線 {ma20_t}）"
+            tip = f"強勢續抱！跌破減碼線 『{lock_line} 元』 先鎖利一半；跌破 20MA 『{ma20_t} 元』 三日站不回全出。"
+
+    vol_lots_h = pd.Series(df["Volume"].squeeze()).astype(float) / 1000.0
+    vol_ma5_h = vol_lots_h.rolling(5).mean()
+    n_h = min(30, len(df))
+    h_chart_30d = {
+        "dates": idx_dates_str[-n_h:],
+        "close": [round(float(x), 2) for x in close.iloc[-n_h:]],
+        "ma20": [round(float(x), 2) if not np.isnan(float(x)) else None for x in ma20.iloc[-n_h:]],
+        "vol": [int(round(float(x))) for x in vol_lots_h.iloc[-n_h:]],
+        "vol_ma5": [int(round(float(x))) if not np.isnan(float(x)) else None for x in vol_ma5_h.iloc[-n_h:]],
+        "up": [bool(float(c) >= float(o)) for c, o in zip(close.iloc[-n_h:], open_p.iloc[-n_h:])],
+    }
+
+    return {
+        "股票代碼": code, "股票名稱": name, "市場別": market_lbl, "資料日期": idx_dates_str[-1],
+        "_chart_30d": h_chart_30d,
+        "買進日期": buy_date_str or "未填", "持有張數": lots, "買進均價": round(buy_price, 2),
+        "最新收盤價": round(c_t, 2), "未實現報酬(%)": pnl_pct, "預估淨損益(元)": net_pnl,
+        "目前防守階段": stage, "今日移動停損/全出價": main_stop, "短線減碼鎖利線": lock_line,
+        "20MA月線價": ma20_t, "10MA均線價": ma10_t, "連破月線天數": days_below_ma20,
+        "盤後風控警示狀態": alert, "明日操作建議": tip,
+    }
+
+
+def build_holdings_excel_bytes(rows):
+    cols = [
+        "股票代碼", "股票名稱", "市場別", "營業概況(主力業務)", "資料日期", "買進日期", "持有張數",
+        "買進均價", "最新收盤價", "未實現報酬(%)", "預估淨損益(元)",
+        "目前防守階段", "今日移動停損/全出價", "短線減碼鎖利線",
+        "20MA月線價", "10MA均線價", "連破月線天數", "盤後風控警示狀態", "明日操作建議"
+    ]
+    df_out = pd.DataFrame([{k: r[k] for k in cols} for r in rows]) if rows else pd.DataFrame(columns=cols)
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df_out.to_excel(writer, sheet_name="每日持倉移動停利停損", index=False)
+        ws = writer.sheets["每日持倉移動停利停損"]
+        h_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+        h_font = Font(name="Microsoft JhengHei", size=10, bold=True, color="FFFFFF")
+        for c_i in range(1, ws.max_column + 1):
+            cell = ws.cell(row=1, column=c_i)
+            cell.fill, cell.font = h_fill, h_font
+            ws.column_dimensions[get_column_letter(c_i)].width = 16 if c_i < 17 else 44
+    buf.seek(0)
+    return buf.getvalue()
+
+
 def build_excel_bytes(sheets_spec, summary_rows):
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         for sheet_name, rows_data, title_label in sheets_spec:
-            df_sheet = pd.DataFrame([{k: r[k] for k in EXCEL_COLS} for r in rows_data]) if rows_data else pd.DataFrame(columns=EXCEL_COLS)
+            df_sheet = pd.DataFrame([{k: r.get(k, '') for k in EXCEL_COLS} for r in rows_data]) if rows_data else pd.DataFrame(columns=EXCEL_COLS)
             df_sheet.to_excel(writer, sheet_name=sheet_name, index=False)
             ws = writer.sheets[sheet_name]
 
@@ -1038,7 +1263,7 @@ def build_excel_bytes(sheets_spec, summary_rows):
                 for c_i in range(1, ws.max_column + 1):
                     cell = ws.cell(row=r_i, column=c_i)
                     if r_i == 1:
-                        cell.fill = chip_fill if 18 <= c_i <= 24 else header_fill
+                        cell.fill = chip_fill if 19 <= c_i <= 25 else header_fill
                         cell.font = h_font
                         cell.alignment = Alignment(vertical="center", horizontal="center")
                     else:
@@ -1061,6 +1286,7 @@ def build_excel_bytes(sheets_spec, summary_rows):
                 ch.fill = header_fill
                 cur += 1
                 for lbl, txt in [
+                    ("🏢 營業概況(主力業務)", row.get("營業概況(主力業務)", "尚無資料")),
                     ("✅ 達標優勢", dr.get("pros_text", "")),
                     ("🔍 缺口與壓力", dr.get("diagnosis_text", "")),
                     ("💰 主力成本與法人", dr.get("chip_cost_text", "")),
@@ -1077,12 +1303,119 @@ def build_excel_bytes(sheets_spec, summary_rows):
                 cur += 1
 
             for c_i in range(1, max_c + 1):
-                ws.column_dimensions[get_column_letter(c_i)].width = 18 if c_i < 25 else 48
+                ws.column_dimensions[get_column_letter(c_i)].width = 32 if c_i == 4 else (18 if c_i < 26 else 48)
 
         pd.DataFrame(summary_rows, columns=["項目", "數值 / 設定"]).to_excel(writer, sheet_name="掃描統計與參數", index=False)
 
     buf.seek(0)
     return buf.getvalue()
+
+
+
+def build_chart_guidance_text(chart_data, stop_price, ref_date=None):
+    """依據最新收盤價、20MA、紅K停損線與 5 日均量，自動產生股價與成交量白話技術判讀"""
+    if not chart_data or not chart_data.get("close"):
+        return "暫無足夠歷史資料。", "暫無足夠成交量資料。"
+
+    c_last = chart_data["close"][-1]
+    c_prev = chart_data["close"][-2] if len(chart_data["close"]) >= 2 else c_last
+    ma20_last = chart_data["ma20"][-1] or c_last
+    ma20_prev = chart_data["ma20"][-2] if len(chart_data["ma20"]) >= 2 and chart_data["ma20"][-2] else ma20_last
+    v_last = chart_data["vol"][-1]
+    v_ma5_last = chart_data["vol_ma5"][-1] or max(v_last, 1)
+
+    # 1. 上方股價折線圖判讀（收盤價 vs 20MA & 紅K停損線 + 停損/停利建議）
+    bias_ma20 = round((c_last / ma20_last - 1.0) * 100.0, 2) if ma20_last > 0 else 0.0
+    ma_dir = "上揚" if ma20_last >= ma20_prev else "下彎"
+    stop_val = float(stop_price) if stop_price else round(c_last * 0.93, 2)
+
+    if c_last < stop_val and c_last < ma20_last:
+        price_advice = f"🚨 **停損警示**：最新收盤（{c_last}元）已同時跌破紅K停損線（{stop_val}元）與 20MA 月線（{ma20_last}元），短線轉弱，建議依紀律執行停損出場。"
+    elif c_last < stop_val:
+        price_advice = f"⚠️ **短線破線警戒**：收盤（{c_last}元）已跌破紅K停損線（{stop_val}元），雖仍在 20MA（{ma20_last}元）附近，但屬於短線假突破警訊，建議先減碼或嚴格停損。"
+    elif c_last < ma20_last:
+        price_advice = f"⚠️ **跌破月線觀察**：收盤（{c_last}元）低於 20MA 月線（{ma20_last}元，乖離 {bias_ma20:+.2f}%），若連續三日站不回月線建議波段出場。"
+    elif bias_ma20 >= 12.0:
+        price_advice = f"🔥 **主升段分批停利區**：收盤（{c_last}元）遠高於{ma_dir} 20MA（{ma20_last}元，正乖離 +{bias_ma20:.2f}%），短線漲幅已大，可考慮分批獲利了結一半，剩餘部位改守 10MA 或 20MA 移動停利。"
+    else:
+        gap_s = round((1.0 - stop_val / c_last) * 100.0, 2)
+        price_advice = f"✅ **多頭順勢續抱**：收盤（{c_last}元）穩站於{ma_dir} 20MA（{ma20_last}元，乖離 +{bias_ma20:.2f}%）與紅K停損線（{stop_val}元）之上（距停損緩衝 {gap_s}%），趨勢健康建議續抱觀察。"
+
+    # 2. 下方成交量柱狀圖判讀（成交量 vs 5日均量線之價量關係分析）
+    vol_ratio = round(v_last / v_ma5_last, 2) if v_ma5_last > 0 else 1.0
+    is_up = c_last >= c_prev
+    if is_up and vol_ratio >= 1.3:
+        vol_advice = f"🔥 **價漲量增（健康攻擊盤）**：今日收漲且成交量（{v_last:,}張）為 5 日均量（{v_ma5_last:,}張）的 **{vol_ratio} 倍**，買盤資金積極推升，屬強勢多方表態。"
+    elif is_up and vol_ratio < 0.85:
+        vol_advice = f"🌤️ **價漲量縮（籌碼鎖定／惜售）**：今日收紅但成交量僅為 5 日均量的 **{vol_ratio} 倍**（{v_last:,}張 vs 均量 {v_ma5_last:,}張），代表賣壓極輕，但後續上攻仍需補量確認。"
+    elif (not is_up) and vol_ratio < 0.85:
+        vol_advice = f"🛡️ **價跌量縮（良性洗盤換手）**：今日小幅回檔且量能萎縮至 5 日均量的 **{vol_ratio} 倍**（{v_last:,}張），屬於正常浮額清洗、非主力出貨，只要不破支撐無須過度恐慌。"
+    elif (not is_up) and vol_ratio >= 1.3:
+        vol_advice = f"🚨 **價跌量增（高檔出貨警訊）**：今日收跌且爆出 5 日均量 **{vol_ratio} 倍** 的大量（{v_last:,}張），代表上方籌碼鬆動或主力調節，務必提高警覺並嚴守停損線！"
+    else:
+        vol_advice = f"📊 **量價溫和平穩**：今日成交量（{v_last:,}張）接近 5 日均量（{v_ma5_last:,}張，比值 {vol_ratio} 倍），多空處於常態換手整理。"
+
+    return price_advice, vol_advice
+
+
+def render_price_volume_charts(title_name, chart_data, stop_price, mark_date=None):
+    """上方股價折線圖 + 中間紅綠成交量柱狀圖 + 下方技術分析與價量關係引導說明"""
+    if not chart_data or not chart_data.get("dates"):
+        st.caption("暫無足夠歷史資料繪製價量圖表。")
+        return
+
+    df_c = pd.DataFrame({
+        "日期": chart_data["dates"],
+        "收盤價": chart_data["close"],
+        "20MA月線": chart_data["ma20"],
+        "成交量": chart_data["vol"],
+        "5日均量": chart_data["vol_ma5"],
+        "漲跌": ["漲" if u else "跌" for u in chart_data["up"]],
+    })
+    df_c["紅K停損線"] = float(stop_price) if stop_price else None
+
+    # 上方圖：股價折線圖 + 20MA月線(橘虛線) + 紅K停損線(綠虛線)
+    y_min = min([x for x in df_c["收盤價"].tolist() + [stop_price] if x is not None]) * 0.97
+    y_max = max([x for x in df_c["收盤價"].tolist() + [stop_price] if x is not None]) * 1.03
+
+    base = alt.Chart(df_c).encode(x=alt.X("日期:N", axis=alt.Axis(labelAngle=-45, title=None)))
+    line_close = base.mark_line(color="#38bdf8", strokeWidth=2.5, point=True).encode(
+        y=alt.Y("收盤價:Q", scale=alt.Scale(domain=[y_min, y_max]), title="股價 (元)"),
+        tooltip=["日期", "收盤價", "20MA月線", "紅K停損線"],
+    )
+    line_ma20 = base.mark_line(color="#f59e0b", strokeDash=[5, 4], strokeWidth=1.8).encode(y="20MA月線:Q")
+    line_stop = base.mark_line(color="#22c55e", strokeDash=[3, 3], strokeWidth=1.6).encode(y="紅K停損線:Q")
+
+    price_layers = [line_close, line_ma20, line_stop]
+    if mark_date and mark_date in df_c["日期"].values:
+        rule_df = pd.DataFrame({"日期": [mark_date]})
+        v_rule = alt.Chart(rule_df).mark_rule(color="#ef4444", strokeDash=[4, 2], strokeWidth=2).encode(x="日期:N")
+        price_layers.append(v_rule)
+
+    price_chart = alt.layer(*price_layers).properties(height=230, title=f"📈 {title_name} — 每日股價走勢 (藍:收盤 / 橘虛:20MA / 綠虛:停損線)")
+    st.altair_chart(price_chart, use_container_width=True)
+
+    # 中間圖：紅綠成交量柱狀圖 + 5日均量線
+    bars = base.mark_bar().encode(
+        y=alt.Y("成交量:Q", title="成交量 (張)"),
+        color=alt.Color("漲跌:N", scale=alt.Scale(domain=["漲", "跌"], range=["#ef4444", "#22c55e"]), legend=None),
+        tooltip=["日期", "成交量", "5日均量"],
+    )
+    line_vma5 = base.mark_line(color="#fbbf24", strokeWidth=2).encode(y="5日均量:Q")
+    vol_chart = alt.layer(bars, line_vma5).properties(height=150, title="📊 對應每日成交量變化 (紅:收漲 / 綠:收跌 / 黃線:5日均量)")
+    st.altair_chart(vol_chart, use_container_width=True)
+
+    # 下方：連帶的技術分析與價量關係引導說明
+    p_guide, v_guide = build_chart_guidance_text(chart_data, stop_price, mark_date)
+    st.markdown(
+        f"""<div class="card-box card-watch">
+            <div class="sec-head">📈 股價折線圖判讀（收盤價 vs. 20MA 月線與紅K停損線）</div>
+            <div class="sec-body">{p_guide}</div>
+            <div class="sec-head">📊 成交量柱狀圖判讀（成交量 vs. 5日均量價量關係）</div>
+            <div class="sec-body">{v_guide}</div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
 
 
 def render_mobile_stock_card(row):
@@ -1100,6 +1433,8 @@ def render_mobile_stock_card(row):
     <div class="card-box {css_cls}">
         <div class="card-title">{row['股票代碼']} {row['股票名稱']} ({row['市場別']}) ｜ 資料日：{row['資料日期']}</div>
         <div class="card-badge">{dr['archetype_title']}<br>{badge}</div>
+        <div class="sec-head">🏢 營業概況（主力業務）</div>
+        <div class="sec-body">{row.get("營業概況(主力業務)", "尚無資料")}</div>
         <div class="sec-head">✅ 達標指標優勢</div>
         <div class="sec-body">{dr['pros_text']}</div>
         <div class="sec-head">🔍 關鍵缺口／盤中軌跡與前波壓力</div>
@@ -1111,6 +1446,14 @@ def render_mobile_stock_card(row):
     </div>
     """
     st.markdown(html_card, unsafe_allow_html=True)
+    if row.get("_chart_30d"):
+        with st.expander(f"📈 查看 {row['股票代碼']} {row['股票名稱']} 股價與成交量走勢圖 ＋ 技術判讀"):
+            render_price_volume_charts(
+                f"{row['股票代碼']} {row['股票名稱']}",
+                row["_chart_30d"],
+                row.get("突破紅K低點(停損參考)"),
+                mark_date=row.get("資料日期"),
+            )
 
 
 # ==========================================
@@ -1149,7 +1492,7 @@ params = {
     "min_amount_wan": float(min_amount_wan), "vol_ratio": float(vol_ratio), "upper_shadow_ratio": float(upper_shadow),
 }
 
-tab1, tab2 = st.tabs(["🩺 單檔／自選個股即時健檢", "🚀 全市場選股掃描"])
+tab1, tab2, tab3 = st.tabs(["🩺 個股即時健檢", "🚀 全市場選股", "💼 持倉移動停利/停損"])
 
 # ---------- 分頁 1：手動輸入個股即時健檢 ----------
 with tab1:
@@ -1284,6 +1627,116 @@ with tab2:
             file_name=f"進階選股結果_{market_title}_{dt_tag}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
+
+# ---------- 分頁 3：我的持倉三段式自動移動停利／停損管理 ----------
+with tab3:
+    st.caption("💡 規則：第1段(<+5%)守紅K低點/-7% ｜ 第2段(+5~15%)自動上移保本/20MA ｜ 第3段(>+15%)減碼線(10MA/2ATR)＋波段全出(破20MA三日)。")
+
+    # 從網址參數自動還原先前記憶的多檔持倉 (格式: code:price:lots:date|...)
+    if "holdings" not in st.session_state:
+        init_h = []
+        raw_h = st.query_params.get("h", "")
+        if raw_h:
+            for item in raw_h.split("|"):
+                parts = item.split(":")
+                if len(parts) >= 3:
+                    try:
+                        init_h.append({"code": parts[0], "buy_price": float(parts[1]), "lots": int(parts[2]), "buy_date": parts[3] if len(parts) > 3 else ""})
+                    except ValueError:
+                        pass
+        st.session_state["holdings"] = init_h
+
+    def _sync_holdings_to_url():
+        encoded = "|".join([f"{h['code']}:{h['buy_price']}:{h['lots']}:{h.get('buy_date','')}" for h in st.session_state["holdings"]])
+        if encoded:
+            st.query_params["h"] = encoded
+        elif "h" in st.query_params:
+            del st.query_params["h"]
+
+    with st.form("add_holding_form", clear_on_submit=True):
+        hc1, hc2 = st.columns(2)
+        h_code = hc1.text_input("股票代號或名稱", placeholder="如：3004 或 豐達科")
+        h_price = hc2.number_input("買進均價 (元)", min_value=0.1, value=100.0, step=0.5)
+        hc3, hc4 = st.columns(2)
+        h_lots = hc3.number_input("持有張數", min_value=1, value=1, step=1)
+        h_date = hc4.text_input("買進日期 (選填)", placeholder="如：2026-11-18")
+        if st.form_submit_button("➕ 加入持倉清單（自動記憶於網址）"):
+            if h_code.strip():
+                st.session_state["holdings"].append({
+                    "code": h_code.strip(), "buy_price": float(h_price), "lots": int(h_lots), "buy_date": h_date.strip()
+                })
+                _sync_holdings_to_url()
+                st.rerun()
+
+    if st.session_state["holdings"]:
+        st.markdown("**📋 目前追蹤持倉（把更新後的網址加入書籤即可永久記憶）**")
+        for idx, h in enumerate(st.session_state["holdings"]):
+            r1, r2 = st.columns([5, 1])
+            r1.write(f"{idx+1}. **{h['code']}** ｜ 買進價 `{h['buy_price']}` 元 × `{h['lots']}` 張" + (f" ({h['buy_date']})" if h.get("buy_date") else ""))
+            if r2.button("刪", key=f"del_h_{idx}"):
+                st.session_state["holdings"].pop(idx)
+                _sync_holdings_to_url()
+                st.rerun()
+
+        if st.button("🔄 一鍵計算全部持倉今日移動停利／停損", type="primary"):
+            with st.spinner("正在抓取最新收盤日 K 並計算三段式移動防守線..."):
+                h_results = []
+                for h in st.session_state["holdings"]:
+                    res_q, _ = resolve_user_queries(h["code"])
+                    if not res_q:
+                        st.warning(f"找不到標的：{h['code']}")
+                        continue
+                    sym, code, name, m_lbl = res_q[0]
+                    df_h = yf.download(tickers=sym, period="6mo", interval="1d", auto_adjust=False, progress=False)
+                    if (df_h is None or df_h.empty) and sym.endswith(".TW"):
+                        df_h = yf.download(tickers=sym.replace(".TW", ".TWO"), period="6mo", interval="1d", auto_adjust=False, progress=False)
+                        if df_h is not None and not df_h.empty:
+                            m_lbl = "上櫃股"
+                    item_res = evaluate_holding_position(df_h, code, name, m_lbl, h["buy_price"], h["lots"], h.get("buy_date", ""))
+                    if item_res:
+                        h_results.append(item_res)
+
+                if h_results:
+                    tot_pnl = sum(r["預估淨損益(元)"] for r in h_results)
+                    tot_cost = sum(r["買進均價"] * r["持有張數"] * 1000 for r in h_results)
+                    tot_pct = round(tot_pnl / tot_cost * 100.0, 2) if tot_cost > 0 else 0.0
+                    st.success(f"✅ 完成 {len(h_results)} 檔持倉風控計算！總預估淨損益：{tot_pnl:+,d} 元 ({tot_pct:+.2f}%)")
+
+                    for r in h_results:
+                        cls = "card-warn" if ("🚨" in r["盤後風控警示狀態"] or "⚠️" in r["盤後風控警示狀態"]) else "card-star" if "🚀" in r["目前防守階段"] else "card-watch"
+                        m1, m2, m3, m4 = st.columns(4)
+                        m1.metric("最新收盤", f"{r['最新收盤價']}", f"{r['未實現報酬(%)']:+.2f}%")
+                        m2.metric("預估淨損益", f"{r['預估淨損益(元)']:+,d}", f"{r['持有張數']}張(買{r['買進均價']})")
+                        m3.metric("移動停損/全出", f"{r['今日移動停損/全出價']}", f"20MA {r['20MA月線價']}")
+                        m4.metric("短線減碼鎖利", f"{r['短線減碼鎖利線']}", f"10MA {r['10MA均線價']}")
+
+                        st.markdown(
+                            f"""<div class="card-box {cls}">
+                                <div class="card-title">{r['股票代碼']} {r['股票名稱']} ({r['市場別']}) ｜ 資料日：{r['資料日期']}</div>
+                                <div class="card-badge">{r['目前防守階段']}<br>{r['盤後風控警示狀態']}</div>
+                                <div class="sec-body">👉 {r['明日操作建議']}</div>
+                            </div>""",
+                            unsafe_allow_html=True,
+                        )
+                        if r.get("_chart_30d"):
+                            with st.expander(f"📈 查看 {r['股票代碼']} {r['股票名稱']} 追蹤價量走勢圖 ＋ 停損/停利判讀"):
+                                render_price_volume_charts(
+                                    f"{r['股票代碼']} {r['股票名稱']}",
+                                    r["_chart_30d"],
+                                    r.get("今日移動停損/全出價"),
+                                    mark_date=r.get("買進日期") if r.get("買進日期") != "未填" else None,
+                                )
+
+                    h_excel = build_holdings_excel_bytes(h_results)
+                    dt_t = h_results[0]["資料日期"].replace("-", "")
+                    st.download_button(
+                        label=f"📥 下載每日持倉移動停利／停損 Excel ({dt_t})",
+                        data=h_excel,
+                        file_name=f"每日持倉移動停利停損報表_{dt_t}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+    else:
+        st.info("請於上方表單輸入您買進的股票代號與買進均價，即可開始每日盤後追蹤三段式移動停利／停損！")
 
 # 底部指標判讀速查與免責聲明
 with st.expander("📖 各欄位指標意義與數值高低判讀指南"):
