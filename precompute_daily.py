@@ -107,6 +107,79 @@ def run_precompute():
             f"完全符合 {len(out_payload['full_sorted'])} 檔，準突破 {len(out_payload['near_top'])} 檔 -> 已存至 daily_cache/{mode}.json"
         )
 
+    # 同步維護近 30 天曾上榜股票之連續價量歷史檔 (daily_cache/watchlist_history.json)
+    # 讓深色 PWA 自選股即使幾天後不在當日選股榜上，也能天天看到最新股價與成交量變化！
+    hist_path = os.path.join(cache_dir, "watchlist_history.json")
+    hist_map = {}
+    if os.path.exists(hist_path):
+        try:
+            with open(hist_path, "r", encoding="utf-8") as f:
+                hist_map = json.load(f)
+        except Exception:
+            hist_map = {}
+
+    # 收集今日所有上榜標的（含既有的歷史追蹤代號，保留最多 120 檔避免檔案過大）
+    tracked_syms = {}
+    for m_key in ("top", "twse", "tpex", "emerging"):
+        mp = os.path.join(cache_dir, f"{m_key}.json")
+        if os.path.exists(mp):
+            with open(mp, "r", encoding="utf-8") as f:
+                m_pkg = json.load(f)
+            for row in m_pkg.get("full_sorted", []) + m_pkg.get("near_top", []):
+                code = row["股票代碼"]
+                suf = ".TW" if "上市" in row.get("市場別", "") else ".TWO"
+                tracked_syms[code] = (f"{code}{suf}", row["股票名稱"], row.get("_chart_30d"))
+
+    for old_code, old_entry in list(hist_map.items()):
+        if old_code not in tracked_syms and len(tracked_syms) < 120:
+            tracked_syms[old_code] = (old_entry.get("yf_sym", f"{old_code}.TW"), old_entry.get("name", ""), None)
+
+    need_fetch = [ (code, info[0], info[1]) for code, info in tracked_syms.items() if info[2] is None ]
+    for code, (sym, nm, chart_d) in tracked_syms.items():
+        if chart_d:
+            hist_map[code] = {"yf_sym": sym, "name": nm, "updated": effective_date, "chart": chart_d}
+
+    if need_fetch:
+        print(f"\n📈 正在更新 {len(need_fetch)} 檔歷史曾上榜自選追蹤股之最新價量走勢...")
+        syms_to_dl = [x[1] for x in need_fetch]
+        try:
+            dl_data = yf.download(tickers=syms_to_dl, period="3mo", interval="1d", group_by="ticker", auto_adjust=False, threads=True, progress=False)
+            for code, sym, nm in need_fetch:
+                try:
+                    sub = dl_data if len(syms_to_dl) == 1 else dl_data[sym]
+                    if sub is None or sub.dropna(how="all").empty:
+                        continue
+                    sub = sub.dropna(subset=["Open", "Close", "Volume"]).copy()
+                    sub = sub[sub["Volume"] > 0]
+                    if len(sub) < 5:
+                        continue
+                    c_s = pd.Series(sub["Close"].squeeze()).astype(float)
+                    o_s = pd.Series(sub["Open"].squeeze()).astype(float)
+                    v_s = pd.Series(sub["Volume"].squeeze()).astype(float) / 1000.0
+                    ma20_s = c_s.rolling(20).mean()
+                    vma5_s = v_s.rolling(5).mean()
+                    n_p = min(30, len(sub))
+                    hist_map[code] = {
+                        "yf_sym": sym,
+                        "name": nm,
+                        "updated": effective_date,
+                        "chart": {
+                            "dates": [dt.strftime("%Y-%m-%d") if hasattr(dt, "strftime") else str(dt)[:10] for dt in sub.index[-n_p:]],
+                            "close": [round(float(x), 2) for x in c_s.iloc[-n_p:]],
+                            "ma20": [round(float(x), 2) if not pd.isna(x) else None for x in ma20_s.iloc[-n_p:]],
+                            "vol": [int(round(float(x))) for x in v_s.iloc[-n_p:]],
+                            "vol_ma5": [int(round(float(x))) if not pd.isna(x) else None for x in vma5_s.iloc[-n_p:]],
+                            "up": [bool(float(c) >= float(o)) for c, o in zip(c_s.iloc[-n_p:], o_s.iloc[-n_p:])],
+                        },
+                    }
+                except Exception:
+                    continue
+        except Exception as ex:
+            print(f"⚠️ 更新歷史追蹤檔時發生異常：{ex}")
+
+    with open(hist_path, "w", encoding="utf-8") as f:
+        json.dump(hist_map, f, ensure_ascii=False)
+    print(f"✅ 已同步更新 daily_cache/watchlist_history.json（共追蹤 {len(hist_map)} 檔）！")
     print("\n🎉 所有市場每日預抓快取已完成！")
 
 
