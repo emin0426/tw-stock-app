@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-台股進階三條件選股 & 主力籌碼成本健檢 — 手機網頁版 App v2.3 (15:30 統一更新 + 雙層共享快取版)
+台股進階三條件選股 & 主力籌碼成本健檢 — 手機網頁版 App v2.4 (15:30 統一更新 + 雙層共享快取版)
 核心升級：
 1. 統一資料更新基準點為【每日台灣時間 15:30】：
    - 15:30 前：強制排除今日未定型資料，嚴格採用「前一個完整交易日」收盤價與三大法人籌碼。
@@ -27,7 +27,7 @@ import pandas as pd
 import yfinance as yf
 import streamlit as st
 import altair as alt
-from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 # ==========================================
@@ -1095,7 +1095,7 @@ def run_shared_market_scan_cached(mode_choice, period_key, param_items_tuple):
 
 
 def evaluate_holding_position(df, code, name, market_lbl, buy_price, lots, buy_date_str=""):
-    """三段式自動移動停利／停損引擎（與電腦版 v2.3 規則 100% 同步）"""
+    """三段式自動移動停利／停損引擎（與電腦版 v2.4 規則 100% 同步）"""
     if df is None or df.empty:
         return None
     if isinstance(df.columns, pd.MultiIndex):
@@ -1245,71 +1245,163 @@ def build_holdings_excel_bytes(rows):
     return buf.getvalue()
 
 
-def build_excel_bytes(sheets_spec, summary_rows):
+COMPACT_COLS = [
+    ("股票代碼", "代號"), ("股票名稱", "名稱"), ("收盤價", "收盤價"), ("單日漲幅(%)", "漲幅%"),
+    ("日成交金額(萬元)", "成交額\n(萬元)"), ("量能倍數(倍)", "量倍數"), ("日週轉率(%)", "週轉%"),
+    ("今日帶寬(%)", "今日\n帶寬%"), ("距20MA乖離(%)", "20MA\n乖離%"),
+    ("20日VWAP資金成本", "20日\nVWAP"), ("近5日法人合計(張)", "法人5日\n(張)"), ("突破紅K低點(停損參考)", "紅K停損"),
+]
+
+
+def _calc_wrap_h(text, chars_per_line=48, base_h=24, line_h=17):
+    if not text:
+        return base_h
+    lines = 0
+    for p in str(text).split("\n"):
+        w = sum(2 if ord(ch) > 127 else 1 for ch in p)
+        lines += max(1, int((w - 1) // (chars_per_line * 2)) + 1)
+    return max(base_h, lines * line_h + 10)
+
+
+def build_excel_bytes(sheets_spec, summary_rows, is_single_check=False):
+    """方案 A+B 零橫軸 Excel 匯出（單檔健檢採 A~H 直式券商報告；全市場採 A~L 12欄單螢幕總表＋末頁27欄原始資料）"""
     buf = io.BytesIO()
+    thin_b = Border(
+        left=Side(style="thin", color="BFBFBF"), right=Side(style="thin", color="BFBFBF"),
+        top=Side(style="thin", color="BFBFBF"), bottom=Side(style="thin", color="BFBFBF"),
+    )
+    h_font = Font(name="Microsoft JhengHei", size=9.5, bold=True)
+    d_font = Font(name="Microsoft JhengHei", size=9.5)
+    sec_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+    sec_font = Font(name="Microsoft JhengHei", size=11, bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+    chip_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+    stop_fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
+
+    all_raw = []
+    for _, r_list, _ in sheets_spec:
+        all_raw.extend(r_list)
+    df_raw = pd.DataFrame([{k: r.get(k, "") for k in EXCEL_COLS} for r in all_raw]) if all_raw else pd.DataFrame(columns=EXCEL_COLS)
+
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        for sheet_name, rows_data, title_label in sheets_spec:
-            df_sheet = pd.DataFrame([{k: r.get(k, '') for k in EXCEL_COLS} for r in rows_data]) if rows_data else pd.DataFrame(columns=EXCEL_COLS)
-            df_sheet.to_excel(writer, sheet_name=sheet_name, index=False)
-            ws = writer.sheets[sheet_name]
-
-            header_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
-            chip_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
-            h_font = Font(name="Microsoft JhengHei", size=10, bold=True)
-            d_font = Font(name="Microsoft JhengHei", size=10)
-
-            for r_i in range(1, ws.max_row + 1):
-                ws.row_dimensions[r_i].height = 24
-                for c_i in range(1, ws.max_column + 1):
-                    cell = ws.cell(row=r_i, column=c_i)
-                    if r_i == 1:
-                        cell.fill = chip_fill if 19 <= c_i <= 25 else header_fill
-                        cell.font = h_font
-                        cell.alignment = Alignment(vertical="center", horizontal="center")
-                    else:
-                        cell.font = d_font
-
-            cur = ws.max_row + 3
-            max_c = len(EXCEL_COLS)
-            sec_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
-            sec_font = Font(name="Microsoft JhengHei", size=11, bold=True, color="FFFFFF")
-            ws.merge_cells(start_row=cur, start_column=1, end_row=cur, end_column=max_c)
-            ct = ws.cell(row=cur, column=1, value=f"📋 【{title_label} — 個股深度實戰拆解與主力成本報告】")
-            ct.font, ct.fill = sec_font, sec_fill
-            cur += 1
-
+        if is_single_check and sheets_spec:
+            # 方案 B：A~H 欄直式券商健檢報告
+            sheet_name, rows_data, _ = sheets_spec[0]
+            ws = writer.book.create_sheet(title=sheet_name, index=0)
+            for c_i, w in {1: 16, 2: 14, 3: 13, 4: 13, 5: 17, 6: 14, 7: 13, 8: 13}.items():
+                ws.column_dimensions[get_column_letter(c_i)].width = w
+            cur = 1
             for idx, row in enumerate(rows_data, start=1):
                 dr = row.get("_deep_report", {})
-                ws.merge_cells(start_row=cur, start_column=1, end_row=cur, end_column=max_c)
-                ch = ws.cell(row=cur, column=1, value=f"#{idx} {row['股票代碼']} {row['股票名稱']} — {dr.get('archetype_title', '')} | {dr.get('rating_badge', '')}")
-                ch.font = h_font
-                ch.fill = header_fill
+                ws.merge_cells(start_row=cur, start_column=1, end_row=cur, end_column=8)
+                ct = ws.cell(row=cur, column=1, value=f"📋 【個股深度健檢報告 #{idx}】 {row.get('股票代碼','')} {row.get('股票名稱','')} ({row.get('市場別','')}) ｜ 資料日：{row.get('資料日期','')}")
+                ct.font, ct.fill = sec_font, sec_fill
+                ws.row_dimensions[cur].height = 26
                 cur += 1
-                for lbl, txt in [
-                    ("🏢 營業概況(主力業務)", row.get("營業概況(主力業務)", "尚無資料")),
-                    ("✅ 達標優勢", dr.get("pros_text", "")),
-                    ("🔍 缺口與壓力", dr.get("diagnosis_text", "")),
-                    ("💰 主力成本與法人", dr.get("chip_cost_text", "")),
-                    ("🛡️ 操作與防守價", dr.get("strategy_text", "")),
+
+                ws.merge_cells(start_row=cur, start_column=1, end_row=cur, end_column=8)
+                ca = ws.cell(row=cur, column=1, value=f"{dr.get('archetype_title','')} ｜ {dr.get('rating_badge','')}")
+                ca.font, ca.fill = h_font, header_fill
+                ws.row_dimensions[cur].height = 24
+                cur += 1
+
+                pairs = [
+                    ("收盤 / 漲幅", f"{row.get('收盤價','')}元 ({row.get('單日漲幅(%)','')}%)", "20日VWAP成本", f"{row.get('20日VWAP資金成本','')}元"),
+                    ("量 / 成交額", f"{row.get('成交量(張)','')}張 / {row.get('日成交金額(萬元)','')}萬", "60日POC密集區", f"{row.get('60日籌碼密集區(POC)','')}元"),
+                    ("量倍 / 週轉", f"{row.get('量能倍數(倍)','')}x / {row.get('日週轉率(%)','')}%", "法人20日成本", f"{row.get('法人20日買超成本','')}"),
+                    ("帶寬(昨→今)", f"{row.get('昨日帶寬(%)','')}%→{row.get('今日帶寬(%)','')}%", "法人5日 / 20日", f"{row.get('近5日法人合計(張)','')} / {row.get('近20日法人合計(張)','')}張"),
+                    ("20MA / 乖離", f"{row.get('20MA月線價','')} ({row.get('距20MA乖離(%)','')}%)", "紅K停損 / 60高", f"{row.get('突破紅K低點(停損參考)','')} / {row.get('前波60日高點','')}"),
+                ]
+                for ll, lv, rl, rv in pairs:
+                    ws.merge_cells(start_row=cur, start_column=1, end_row=cur, end_column=2)
+                    ws.merge_cells(start_row=cur, start_column=3, end_row=cur, end_column=4)
+                    ws.merge_cells(start_row=cur, start_column=5, end_row=cur, end_column=6)
+                    ws.merge_cells(start_row=cur, start_column=7, end_row=cur, end_column=8)
+                    ws.cell(row=cur, column=1, value=ll).font = h_font
+                    ws.cell(row=cur, column=1).fill = header_fill
+                    ws.cell(row=cur, column=3, value=lv).font = d_font
+                    ws.cell(row=cur, column=5, value=rl).font = h_font
+                    ws.cell(row=cur, column=5).fill = chip_fill
+                    ws.cell(row=cur, column=7, value=rv).font = d_font
+                    ws.row_dimensions[cur].height = 22
+                    for ci in range(1, 9):
+                        ws.cell(row=cur, column=ci).border = thin_b
+                    cur += 1
+
+                for sl, stxt, sbg in [
+                    ("🏢 營業概況", row.get("營業概況(主力業務)", "尚無資料"), header_fill),
+                    ("✅ 達標優勢", dr.get("pros_text", ""), header_fill),
+                    ("🔍 缺口與壓力", dr.get("diagnosis_text", ""), header_fill),
+                    ("💰 主力與法人", dr.get("chip_cost_text", ""), chip_fill),
+                    ("🛡️ 操作與防守", dr.get("strategy_text", ""), header_fill),
                 ]:
-                    ws.merge_cells(start_row=cur, start_column=1, end_row=cur, end_column=3)
-                    ws.merge_cells(start_row=cur, start_column=4, end_row=cur, end_column=max_c)
-                    ws.cell(row=cur, column=1, value=lbl).font = h_font
-                    cv = ws.cell(row=cur, column=4, value=txt)
+                    ws.merge_cells(start_row=cur, start_column=1, end_row=cur, end_column=2)
+                    ws.merge_cells(start_row=cur, start_column=3, end_row=cur, end_column=8)
+                    ws.cell(row=cur, column=1, value=sl).font = h_font
+                    ws.cell(row=cur, column=1).fill = sbg
+                    cv = ws.cell(row=cur, column=3, value=stxt)
                     cv.font = d_font
                     cv.alignment = Alignment(wrap_text=True, vertical="center")
-                    ws.row_dimensions[cur].height = max(36, (txt.count("\n") + 1) * 18 + 8)
+                    ws.row_dimensions[cur].height = _calc_wrap_h(stxt, chars_per_line=44)
+                    for ci in range(1, 9):
+                        ws.cell(row=cur, column=ci).border = thin_b
                     cur += 1
                 cur += 1
+        else:
+            # 方案 A：12 欄單螢幕總表 + A~L 欄同寬卡片
+            for sheet_name, rows_data, title_label in sheets_spec:
+                df_c = pd.DataFrame([{lbl: r.get(k, "") for k, lbl in COMPACT_COLS} for r in rows_data]) if rows_data else pd.DataFrame(columns=[lbl for _, lbl in COMPACT_COLS])
+                df_c.to_excel(writer, sheet_name=sheet_name, index=False)
+                ws = writer.sheets[sheet_name]
+                for r_i in range(1, ws.max_row + 1):
+                    ws.row_dimensions[r_i].height = 30 if r_i == 1 else 23
+                    for c_i in range(1, 13):
+                        cell = ws.cell(row=r_i, column=c_i)
+                        cell.border = thin_b
+                        if r_i == 1:
+                            cell.fill = stop_fill if c_i == 12 else (chip_fill if c_i in (10, 11) else header_fill)
+                            cell.font = h_font
+                            cell.alignment = Alignment(vertical="center", horizontal="center", wrap_text=True)
+                        else:
+                            cell.font = d_font
+                for c_i, w in {1: 9, 2: 12, 3: 9.5, 4: 9, 5: 11.5, 6: 9, 7: 9, 8: 9.5, 9: 9.5, 10: 11, 11: 11, 12: 11}.items():
+                    ws.column_dimensions[get_column_letter(c_i)].width = w
 
-            for c_i in range(1, max_c + 1):
-                ws.column_dimensions[get_column_letter(c_i)].width = 32 if c_i == 4 else (18 if c_i < 26 else 48)
+                cur = ws.max_row + 2
+                ws.merge_cells(start_row=cur, start_column=1, end_row=cur, end_column=12)
+                ct = ws.cell(row=cur, column=1, value=f"📋 【{title_label} — 個股實戰拆解與主力成本報告（免拉橫軸）】")
+                ct.font, ct.fill = sec_font, sec_fill
+                cur += 1
+                for idx, row in enumerate(rows_data, start=1):
+                    dr = row.get("_deep_report", {})
+                    ws.merge_cells(start_row=cur, start_column=1, end_row=cur, end_column=12)
+                    ch = ws.cell(row=cur, column=1, value=f"#{idx} {row.get('股票代碼','')} {row.get('股票名稱','')} — {dr.get('archetype_title','')} | {dr.get('rating_badge','')}")
+                    ch.font, ch.fill = h_font, header_fill
+                    cur += 1
+                    for sl, stxt in [
+                        ("🏢 營業概況", row.get("營業概況(主力業務)", "尚無資料")),
+                        ("✅ 達標優勢", dr.get("pros_text", "")),
+                        ("🔍 缺口與壓力", dr.get("diagnosis_text", "")),
+                        ("💰 主力與法人", dr.get("chip_cost_text", "")),
+                        ("🛡️ 操作與防守", dr.get("strategy_text", "")),
+                    ]:
+                        ws.merge_cells(start_row=cur, start_column=1, end_row=cur, end_column=2)
+                        ws.merge_cells(start_row=cur, start_column=3, end_row=cur, end_column=12)
+                        ws.cell(row=cur, column=1, value=sl).font = h_font
+                        cv = ws.cell(row=cur, column=3, value=stxt)
+                        cv.font = d_font
+                        cv.alignment = Alignment(wrap_text=True, vertical="center")
+                        ws.row_dimensions[cur].height = _calc_wrap_h(stxt, chars_per_line=48)
+                        for ci in range(1, 13):
+                            ws.cell(row=cur, column=ci).border = thin_b
+                        cur += 1
+                    cur += 1
 
+        df_raw.to_excel(writer, sheet_name="原始完整數據(27欄)", index=False)
         pd.DataFrame(summary_rows, columns=["項目", "數值 / 設定"]).to_excel(writer, sheet_name="掃描統計與參數", index=False)
 
     buf.seek(0)
     return buf.getvalue()
-
 
 
 def build_chart_guidance_text(chart_data, stop_price, ref_date=None):
@@ -1534,6 +1626,7 @@ with tab1:
                     excel_data = build_excel_bytes(
                         [("個股深度健檢報告", results, "手動指定個股四條件＋主力成本深度健檢")],
                         [("資料日期", results[0]["資料日期"]), ("產出時間", now_str), ("健檢檔數", f"{len(results)} 檔")],
+                        is_single_check=True,
                     )
                     tag = f"{results[0]['股票代碼']}{results[0]['股票名稱']}" if len(results) == 1 else f"自選{len(results)}檔"
                     dt_tag = datetime.now(timezone(timedelta(hours=8))).strftime("%Y%m%d_%H%M")
