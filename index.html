@@ -540,7 +540,7 @@
         showToast(`已移除自選：${code} ${stockObj["股票名稱"]}`);
       } else {
         const todayStr = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
-        state.watchlist.unshift({ ...stockObj, _added_date: stockObj["資料日期"] || todayStr, _added_price: stockObj["收盤價"] });
+        state.watchlist.unshift({ ...stockObj, _added_date: stockObj["資料日期"] || todayStr });
         showToast(`⭐ 已加入自選：${code} ${stockObj["股票名稱"]}`);
       }
       saveWatchlist();
@@ -551,7 +551,7 @@
       }
     }
 
-    function createStockCardHTML(row, tierTag, isWatchCard = false) {
+    function createStockCardHTML(row, tierTag) {
       const dr = row._deep_report || {};
       const badge = dr.rating_badge || row["實戰型態定調與優先級"] || "";
       const pct = Number(row["單日漲幅(%)"] || 0);
@@ -580,19 +580,6 @@
                 ${badge.split("（")[0]}
               </div>
               ${row["營業概況(主力業務)"] ? `<div class="mt-1 text-[11px] text-slate-400 truncate">🏢 ${row["營業概況(主力業務)"]}</div>` : ""}
-              ${isWatchCard ? (() => {
-                const addedPx = Number(row._added_price || 0);
-                const curPx = Number(row["收盤價"] || 0);
-                const cumPct = addedPx > 0 ? +(((curPx - addedPx) / addedPx) * 100).toFixed(2) : null;
-                const cumColor = cumPct === null ? "text-slate-400" : (cumPct > 0 ? "text-rose-400" : cumPct < 0 ? "text-emerald-400" : "text-slate-300");
-                const cumText = cumPct === null ? "" : ` ｜ 累計 <span class="font-semibold ${cumColor}">${cumPct > 0 ? "+" : ""}${cumPct.toFixed(2)}%</span>`;
-                const stopPx = Number(row["突破紅K低點(停損參考)"] || 0);
-                const stopBroken = stopPx > 0 && curPx > 0 && curPx < stopPx;
-                return `<div class="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-400">
-                  <span>最新 ${row["資料日期"] || "--"}${addedPx > 0 ? `（加入價 ${addedPx}）` : ""}${cumText}</span>
-                  ${stopBroken ? `<span class="px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40 font-semibold text-[10px]">🚨 跌破紅K停損</span>` : ""}
-                </div>`;
-              })() : ""}
             </div>
 
             <div class="flex items-start gap-2.5 shrink-0">
@@ -700,55 +687,6 @@
       });
     }
 
-    function getSyncedWatchStock(savedRow) {
-      const code = savedRow["股票代碼"];
-      const addedDate = savedRow._added_date || savedRow["資料日期"] || "";
-      const addedPrice = savedRow._added_price !== undefined ? savedRow._added_price : savedRow["收盤價"];
-      const origStop = savedRow["突破紅K低點(停損參考)"];
-
-      // 1) 若當日已載入的市場快取中也有該股，優先補齊最新法人/帶寬等欄位（保留原始加入日、加入價與紅K停損）
-      let merged = { ...savedRow, _added_date: addedDate, _added_price: addedPrice };
-      for (const modeKey of Object.keys(state.cacheByMode)) {
-        const pkg = state.cacheByMode[modeKey];
-        if (!pkg || pkg.is_demo) continue;
-        const allRows = [...(pkg.full_sorted || []), ...(pkg.near_top || [])];
-        const fresh = allRows.find(x => x["股票代碼"] === code);
-        if (fresh && (!merged["資料日期"] || (fresh["資料日期"] || "") >= merged["資料日期"])) {
-          merged = {
-            ...merged,
-            ...fresh,
-            _added_date: addedDate,
-            _added_price: addedPrice,
-            "突破紅K低點(停損參考)": origStop ?? fresh["突破紅K低點(停損參考)"]
-          };
-          break;
-        }
-      }
-
-      // 2) 從每日自動更新的 watchlist_history.json 套用最新收盤價、單日漲幅、20MA、成交量與最新日期
-      const histEntry = state.watchlistHistory && state.watchlistHistory[code];
-      const ch = histEntry && histEntry.chart;
-      if (ch && Array.isArray(ch.dates) && ch.dates.length && Array.isArray(ch.close) && ch.close.length) {
-        const n = ch.close.length;
-        const latestDate = ch.dates[n - 1];
-        const latestClose = Number(ch.close[n - 1]);
-        if (latestDate && (!merged["資料日期"] || latestDate >= merged["資料日期"])) {
-          const prevClose = n >= 2 ? Number(ch.close[n - 2]) : 0;
-          const dailyPct = prevClose > 0 ? +(((latestClose - prevClose) / prevClose) * 100).toFixed(2) : Number(merged["單日漲幅(%)"] || 0);
-          merged["資料日期"] = latestDate;
-          merged["收盤價"] = latestClose;
-          merged["單日漲幅(%)"] = dailyPct;
-          if (Array.isArray(ch.ma20) && ch.ma20[n - 1] !== null && ch.ma20[n - 1] !== undefined) {
-            merged["20MA月線價"] = ch.ma20[n - 1];
-          }
-          if (Array.isArray(ch.vol) && ch.vol[n - 1] !== null && ch.vol[n - 1] !== undefined) {
-            merged["成交量(張)"] = ch.vol[n - 1];
-          }
-        }
-      }
-      return merged;
-    }
-
     function renderWatchlist() {
       const el = document.getElementById("watchlistContainer");
       if (!state.watchlist.length) {
@@ -758,9 +696,8 @@
           </div>`;
         return;
       }
-      const syncedList = state.watchlist.map(r => getSyncedWatchStock(r));
-      el.innerHTML = syncedList.map(r => createStockCardHTML(r, r._tier || "NEAR", true)).join("");
-      const lookup = Object.fromEntries(syncedList.map(r => [r["股票代碼"], r]));
+      el.innerHTML = state.watchlist.map(r => createStockCardHTML(r, r._tier || "NEAR")).join("");
+      const lookup = Object.fromEntries(state.watchlist.map(r => [r["股票代碼"], r]));
       el.querySelectorAll(".stock-card").forEach(card => {
         card.addEventListener("click", (e) => {
           if (e.target.closest(".star-btn")) return;
@@ -870,8 +807,8 @@
     // ==========================================
     // 5.5 價量雙圖表與技術分析引導說明引擎 (Chart.js)
     // ==========================================
-    async function fetchWatchlistHistory(forceNetwork = false) {
-      if (!forceNetwork && state.watchlistHistory) return state.watchlistHistory;
+    async function fetchWatchlistHistory() {
+      if (state.watchlistHistory) return state.watchlistHistory;
       try {
         const resp = await fetch(`${GITHUB_CACHE_BASE}/watchlist_history.json?t=${Date.now()}`, { cache: "no-store" });
         if (resp.ok) {
@@ -1148,12 +1085,7 @@
           active ? "text-sky-400 font-semibold" : "text-slate-400 font-medium"
         }`;
       });
-      if (tabName === "watchlist") {
-        renderWatchlist();
-        if (!state.watchlistHistory) {
-          fetchWatchlistHistory().then(() => { if (state.activeTab === "watchlist") renderWatchlist(); });
-        }
-      }
+      if (tabName === "watchlist") renderWatchlist();
       if (tabName === "tools") renderCalculator();
       window.scrollTo({ top: 0, behavior: "smooth" });
     }
@@ -1186,13 +1118,8 @@
       renderRadar();
     });
 
-    document.getElementById("btnRefresh").addEventListener("click", async () => {
-      await Promise.all([
-        loadMarketData(state.mode, true),
-        fetchWatchlistHistory(true)
-      ]);
-      if (state.activeTab === "watchlist") renderWatchlist();
-      showToast("已同步最新雲端快取與自選報價");
+    document.getElementById("btnRefresh").addEventListener("click", () => {
+      loadMarketData(state.mode, true);
     });
 
     document.getElementById("btnClearWatch").addEventListener("click", () => {
@@ -1244,9 +1171,6 @@
     // 初始化
     renderCalculator();
     loadMarketData(state.mode);
-    fetchWatchlistHistory().then(() => {
-      if (state.activeTab === "watchlist") renderWatchlist();
-    });
   </script>
 </body>
 </html>

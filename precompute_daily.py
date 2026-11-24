@@ -190,6 +190,17 @@ def run_precompute():
     with open(hist_path, "w", encoding="utf-8") as f:
         json.dump(hist_map, f, ensure_ascii=False)
     print(f"✅ 已同步更新 daily_cache/watchlist_history.json（共追蹤 {len(hist_map)} 檔）！")
+    # 同步抓取大盤資券變化並輸出 daily_cache/market_margin.json 供手機深色 PWA 讀取
+    try:
+        mkt_margin = core.get_market_margin_analysis_cached(period_key)
+        mkt_margin["generated_at"] = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M")
+        mm_path = os.path.join(cache_dir, "market_margin.json")
+        with open(mm_path, "w", encoding="utf-8") as f:
+            json.dump(mkt_margin, f, ensure_ascii=False, indent=2)
+        print(f"✅ 已同步更新 daily_cache/market_margin.json（{mkt_margin.get('signal_badge', '')}）！")
+    except Exception as ex:
+        print(f"⚠️ 產生 market_margin.json 發生異常：{ex}")
+
     print("\n🎉 所有市場每日預抓快取已完成！")
 
 
