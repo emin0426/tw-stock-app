@@ -565,12 +565,93 @@ def fetch_margin_day_cached(exchange, yyyymmdd):
     return result
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_twse_taiex_history_cached(period_key):
+    """
+    直接從證交所官方 FMTQIK (每日市場成交資訊) 抓取近 2 個月加權指數收盤紀錄。
+    比 Yahoo Finance ^TWII 更準時且精確，避免 ^TWII 漏更新前一日大盤收盤。
+    回傳 list of dict: [{"date": "YYYY-MM-DD", "yyyymmdd": "YYYYMMDD", "close": float, "chg_pts": float}, ...] (由舊到新)
+    """
+    exclude_today, today_tw_date, _, _ = get_market_data_cutoff_info()
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    ssl_ctx = ssl._create_unverified_context()
+
+    # 抓本月與前兩個月，確保至少有 25~40 個交易日可算 20MA
+    months = []
+    y, m = today_tw_date.year, today_tw_date.month
+    for _ in range(3):
+        months.append(f"{y:04d}{m:02d}01")
+        m -= 1
+        if m == 0:
+            m = 12
+            y -= 1
+
+    rows_by_date = {}
+    for ym01 in reversed(months):
+        url = f"https://www.twse.com.tw/rwd/zh/afterTrading/FMTQIK?date={ym01}&response=json"
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=10, context=ssl_ctx) as resp:
+                payload = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            if payload.get("stat") != "OK" or not payload.get("data"):
+                continue
+            fields = [str(f).strip() for f in payload.get("fields", [])]
+            idx_close = next((i for i, f in enumerate(fields) if "加權股價指數" in f or "指數" in f), 4)
+            idx_chg = next((i for i, f in enumerate(fields) if "漲跌點數" in f), 5)
+            for r in payload["data"]:
+                if len(r) <= max(idx_close, idx_chg):
+                    continue
+                roc_str = str(r[0]).strip()
+                parts = roc_str.split("/")
+                if len(parts) != 3:
+                    continue
+                ad_y = int(parts[0]) + 1911
+                ad_m = int(parts[1])
+                ad_d = int(parts[2])
+                dt_obj = datetime(ad_y, ad_m, ad_d).date()
+                if exclude_today and dt_obj >= today_tw_date:
+                    continue
+                close_v = _parse_num_str(r[idx_close])
+                chg_v = _parse_num_str(r[idx_chg])
+                if close_v <= 0:
+                    continue
+                d_iso = dt_obj.strftime("%Y-%m-%d")
+                rows_by_date[d_iso] = {
+                    "date": d_iso,
+                    "yyyymmdd": dt_obj.strftime("%Y%m%d"),
+                    "close": round(close_v, 2),
+                    "chg_pts": round(chg_v, 2),
+                }
+        except Exception:
+            continue
+
+    return [rows_by_date[k] for k in sorted(rows_by_date.keys())]
+
+
 def evaluate_market_margin_signal(taiex_chg_1d, taiex_chg_5d, taiex_bias_20ma, chg_1d_yi, chg_5d_yi, curr_amt_yi, short_curr, short_chg_1d, short_chg_5d, margin_date):
-    """根據大盤指數位置與融資融券變化，輸出明確的「過熱警訊」或「落底訊號」白話說明"""
-    is_overheat_chase = (taiex_bias_20ma >= 2.5 or taiex_chg_5d >= 1.5) and (chg_1d_yi >= 25.0 or chg_5d_yi >= 60.0)
-    is_overheat_knife = (taiex_chg_1d <= -0.5 or taiex_chg_5d <= -1.5) and (chg_1d_yi >= 15.0 or chg_5d_yi >= 30.0)
-    is_bottom_flush = (taiex_bias_20ma <= 0.0 or taiex_chg_5d <= -1.0) and (chg_1d_yi <= -25.0 or chg_5d_yi <= -60.0)
-    is_bottom_turn = (taiex_chg_1d > 0.0 or taiex_chg_5d > 0.0) and (chg_1d_yi < -3.0 or chg_5d_yi <= -20.0)
+    """根據大盤指數位置與融資融券變化，輸出明確的「過熱警訊」或「落底訊號」白話說明（嚴格區分單日融資增減方向）"""
+    # 1) 過熱警訊 A：大盤下跌但融資逆勢增加（散戶接刀）
+    is_overheat_knife = (
+        (taiex_chg_1d <= -0.5 or taiex_chg_5d <= -1.5)
+        and (chg_1d_yi >= 15.0 or (chg_1d_yi > 0 and chg_5d_yi >= 30.0))
+    )
+    # 2) 過熱警訊 B：大盤高檔或單日急漲伴隨融資暴增追價
+    is_overheat_chase = (
+        ((taiex_bias_20ma >= 2.5 or taiex_chg_5d >= 1.5) and (chg_1d_yi >= 25.0 or (chg_1d_yi > 0 and chg_5d_yi >= 60.0)))
+        or (taiex_chg_1d >= 1.5 and chg_1d_yi >= 50.0)
+    )
+    # 3) 落底訊號 A：止跌轉強＋價漲資減（必須當日融資未增加 chg_1d_yi <= 0）
+    is_bottom_turn = (
+        (taiex_chg_1d > 0.0)
+        and (chg_1d_yi <= 0.0)
+        and (chg_1d_yi <= -3.0 or chg_5d_yi <= -20.0)
+    )
+    # 4) 落底訊號 B：跌深殺融資清洗浮額（必須當日融資未增加 chg_1d_yi <= 0）
+    is_bottom_flush = (
+        (taiex_chg_1d <= -0.5 or taiex_bias_20ma <= 0.0 or taiex_chg_5d <= -1.0)
+        and (chg_1d_yi <= 0.0)
+        and (chg_1d_yi <= -25.0 or chg_5d_yi <= -60.0)
+    )
 
     short_note = (
         f"融券餘額 {short_curr:,} 張（單日 {short_chg_1d:+,} 張、近5日 {short_chg_5d:+,} 張"
@@ -583,37 +664,37 @@ def evaluate_market_margin_signal(taiex_chg_1d, taiex_chg_5d, taiex_bias_20ma, c
         signal_badge = "🚨 過熱警訊（大盤下跌＋融資逆勢接刀）"
         summary_text = (
             f"大盤走弱（單日 {taiex_chg_1d:+.2f}% / 近5日 {taiex_chg_5d:+.2f}%），但上市融資餘額卻逆勢增加"
-            f"（單日 {chg_1d_yi:+.2f} 億、近5日 {chg_5d_yi:+.2f} 億，總餘額 {curr_amt_yi:.2f} 億），"
+            f"（單日 {chg_1d_yi:+.2f} 億、近5日 {chg_5d_yi:+.2f} 億，總餘額 {curr_amt_yi:,.2f} 億），"
             f"屬於典型「散戶逢低接刀、浮額未清」警訊！籌碼趨於凌亂、反彈易遇解套賣壓，建議降低持股水位並嚴守停損。{short_note}"
         )
     elif is_overheat_chase:
         signal_level = "OVERHEAT"
-        signal_badge = "🚨 過熱警訊（大盤高檔＋融資暴增追價）"
+        signal_badge = "🚨 過熱警訊（大盤急漲／高檔＋融資暴增追價）"
         summary_text = (
-            f"大盤處相對高檔（距月線乖離 {taiex_bias_20ma:+.2f}% / 近5日 {taiex_chg_5d:+.2f}%），"
-            f"融資餘額同步急增（單日 {chg_1d_yi:+.2f} 億、近5日 {chg_5d_yi:+.2f} 億，總餘額 {curr_amt_yi:.2f} 億），"
-            f"顯示散戶追高情緒過熱、短線籌碼浮額加重，慎防高檔爆量震盪或主力趁機調節，切勿過度追價。{short_note}"
+            f"大盤上漲（單日 {taiex_chg_1d:+.2f}% / 距月線 {taiex_bias_20ma:+.2f}%），"
+            f"上市融資餘額單日大幅回補增加（單日 {chg_1d_yi:+.2f} 億、近5日 {chg_5d_yi:+.2f} 億，總餘額 {curr_amt_yi:,.2f} 億），"
+            f"顯示短線散戶追價積極、浮額快速回流，慎防隔日劇烈震盪或主力趁反彈調節，切勿過度追高。{short_note}"
         )
     elif is_bottom_turn:
         signal_level = "BOTTOM"
         signal_badge = "🟢 落底訊號（止跌轉強＋價漲資減）"
         summary_text = (
             f"大盤止跌回穩（單日 {taiex_chg_1d:+.2f}% / 近5日 {taiex_chg_5d:+.2f}%），"
-            f"同時融資持續退場（單日 {chg_1d_yi:+.2f} 億、近5日 {chg_5d_yi:+.2f} 億，總餘額 {curr_amt_yi:.2f} 億），"
+            f"同時融資持續退場（單日 {chg_1d_yi:+.2f} 億、近5日 {chg_5d_yi:+.2f} 億，總餘額 {curr_amt_yi:,.2f} 億），"
             f"呈現最健康的「價漲資減」結構！代表浮額已清洗、籌碼流向法人與大戶手中，具備落底轉強契機。{short_note}"
         )
     elif is_bottom_flush:
         signal_level = "BOTTOM"
         signal_badge = "🟢 落底訊號（跌深殺融資清洗浮額）"
         summary_text = (
-            f"大盤回檔修正（距月線 {taiex_bias_20ma:+.2f}% / 近5日 {taiex_chg_5d:+.2f}%）伴隨明顯「殺融資」"
-            f"（單日 {chg_1d_yi:+.2f} 億、近5日 {chg_5d_yi:+.2f} 億，總餘額 {curr_amt_yi:.2f} 億），"
+            f"大盤回檔修正（單日 {taiex_chg_1d:+.2f}% / 距月線 {taiex_bias_20ma:+.2f}%）伴隨明顯「殺融資」"
+            f"（單日 {chg_1d_yi:+.2f} 億、近5日 {chg_5d_yi:+.2f} 億，總餘額 {curr_amt_yi:,.2f} 億），"
             f"恐慌浮額正加速出清、籌碼逐步沉澱，留意後續止跌收紅轉為「價漲資減」的落底切入點。{short_note}"
         )
     else:
         signal_level = "NEUTRAL"
         if taiex_chg_1d >= 0 and chg_1d_yi >= 0:
-            sub_lbl = "價漲資溫和增（多方健康跟進）"
+            sub_lbl = "價漲資溫和增（多方跟進）"
         elif taiex_chg_1d < 0 and chg_1d_yi < 0:
             sub_lbl = "價跌資同步減（良性回檔換手）"
         else:
@@ -621,7 +702,7 @@ def evaluate_market_margin_signal(taiex_chg_1d, taiex_chg_5d, taiex_bias_20ma, c
         signal_badge = f"⚖️ 溫和常態（{sub_lbl}）"
         summary_text = (
             f"大盤收盤變動 {taiex_chg_1d:+.2f}%（近5日 {taiex_chg_5d:+.2f}%、距月線 {taiex_bias_20ma:+.2f}%），"
-            f"融資餘額 {curr_amt_yi:.2f} 億元（單日 {chg_1d_yi:+.2f} 億、近5日 {chg_5d_yi:+.2f} 億），"
+            f"融資餘額 {curr_amt_yi:,.2f} 億元（單日 {chg_1d_yi:+.2f} 億、近5日 {chg_5d_yi:+.2f} 億），"
             f"目前未出現極端過熱或恐慌斷頭，屬常態籌碼換手格局，可依個股技術面與法人動向操作。{short_note}"
         )
 
@@ -635,44 +716,39 @@ def evaluate_market_margin_signal(taiex_chg_1d, taiex_chg_5d, taiex_bias_20ma, c
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_market_margin_analysis_cached(period_key):
-    """抓取加權指數 (^TWII) 與證交所近期融資融券統計，產出每日大盤資券變化說明"""
+    """優先使用證交所官方 FMTQIK 加權指數 + MI_MARGN 融資融券統計，確保日期與漲跌幅 100% 準確對齊"""
     exclude_today, today_tw_date, _, _ = get_market_data_cutoff_info()
-    taiex_close = 0.0
-    taiex_chg_1d = 0.0
-    taiex_chg_5d = 0.0
-    taiex_bias_20ma = 0.0
-    candidate_dates = []
+    taiex_rows = fetch_twse_taiex_history_cached(period_key)
 
-    try:
-        df_idx = yf.download(tickers="^TWII", period="2mo", interval="1d", auto_adjust=False, progress=False)
-        if df_idx is not None and not df_idx.empty:
-            if isinstance(df_idx.columns, pd.MultiIndex):
-                df_idx.columns = [c[0] for c in df_idx.columns]
-            df_idx = df_idx.dropna(subset=["Close"]).copy()
-            if exclude_today:
-                dates_s = pd.to_datetime(df_idx.index).date
-                df_idx = df_idx[dates_s < today_tw_date]
-            if len(df_idx) >= 2:
-                closes = df_idx["Close"].astype(float)
-                taiex_close = round(float(closes.iloc[-1]), 2)
-                taiex_chg_1d = round((float(closes.iloc[-1]) / float(closes.iloc[-2]) - 1.0) * 100.0, 2)
-                if len(closes) >= 6:
-                    taiex_chg_5d = round((float(closes.iloc[-1]) / float(closes.iloc[-6]) - 1.0) * 100.0, 2)
-                ma20 = float(closes.tail(20).mean())
-                if ma20 > 0:
-                    taiex_bias_20ma = round((taiex_close / ma20 - 1.0) * 100.0, 2)
-                candidate_dates = [
-                    dt.strftime("%Y%m%d") if hasattr(dt, "strftime") else str(dt)[:10].replace("-", "")
-                    for dt in df_idx.index[-8:]
-                ]
-    except Exception:
-        pass
+    # 備援：僅當證交所 FMTQIK 連線失敗時才退回 Yahoo Finance ^TWII
+    if len(taiex_rows) < 2:
+        try:
+            df_idx = yf.download(tickers="^TWII", period="2mo", interval="1d", auto_adjust=False, progress=False)
+            if df_idx is not None and not df_idx.empty:
+                if isinstance(df_idx.columns, pd.MultiIndex):
+                    df_idx.columns = [c[0] for c in df_idx.columns]
+                df_idx = df_idx.dropna(subset=["Close"]).copy()
+                if exclude_today:
+                    df_idx = df_idx[pd.to_datetime(df_idx.index).date < today_tw_date]
+                taiex_rows = []
+                for dt, row in df_idx.iterrows():
+                    d_iso = dt.strftime("%Y-%m-%d") if hasattr(dt, "strftime") else str(dt)[:10]
+                    taiex_rows.append({
+                        "date": d_iso,
+                        "yyyymmdd": d_iso.replace("-", ""),
+                        "close": round(float(row["Close"]), 2),
+                        "chg_pts": 0.0,
+                    })
+        except Exception:
+            pass
 
-    if not candidate_dates:
+    if taiex_rows:
+        candidate_dates = [r["yyyymmdd"] for r in taiex_rows[-10:]]
+    else:
         base_d = today_tw_date - timedelta(days=1 if exclude_today else 0)
         candidate_dates = [(base_d - timedelta(days=i)).strftime("%Y%m%d") for i in range(10, -1, -1)]
 
-    # 取得最近最多 5 個有公布資券的交易日（若當日 15:30~20:30 證交所尚未公布當日資券，自動退回前一日）
+    # 取得最近最多 5 個有公布資券的交易日
     valid_days = []
     for d_str in reversed(candidate_dates):
         res = fetch_margin_day_cached("TWSE", d_str)
@@ -681,21 +757,47 @@ def get_market_margin_analysis_cached(period_key):
             if len(valid_days) >= 5:
                 break
 
+    # 預設取最新一個加權指數交易日；若資券日有對應日期則對齊同日指數計算資券關係
+    def _calc_taiex_metrics(rows, target_date_iso=None):
+        if not rows or len(rows) < 2:
+            return "--", 0.0, 0.0, 0.0, 0.0
+        idx = len(rows) - 1
+        if target_date_iso:
+            for k in range(len(rows) - 1, -1, -1):
+                if rows[k]["date"] <= target_date_iso:
+                    idx = k
+                    break
+        if idx < 1:
+            idx = len(rows) - 1
+        c_now = rows[idx]["close"]
+        c_prev = rows[idx - 1]["close"]
+        chg_1d = round((c_now / c_prev - 1.0) * 100.0, 2) if c_prev > 0 else 0.0
+        c_5 = rows[max(0, idx - 5)]["close"]
+        chg_5d = round((c_now / c_5 - 1.0) * 100.0, 2) if c_5 > 0 else chg_1d
+        win20 = [x["close"] for x in rows[max(0, idx - 19): idx + 1]]
+        ma20 = sum(win20) / len(win20) if win20 else c_now
+        bias20 = round((c_now / ma20 - 1.0) * 100.0, 2) if ma20 > 0 else 0.0
+        return rows[idx]["date"], c_now, chg_1d, chg_5d, bias20
+
     if not valid_days:
+        t_date, t_close, t_1d, t_5d, t_bias = _calc_taiex_metrics(taiex_rows)
         return {
             "available": False,
             "signal_level": "NEUTRAL",
             "signal_badge": "ℹ️ 大盤資券資料暫未取得",
             "summary_text": "目前證交所融資融券統計暫無回應或尚未公告，請稍後重新整理。",
+            "taiex_date": t_date,
             "margin_date": "--",
-            "taiex_close": taiex_close,
-            "taiex_chg_1d": taiex_chg_1d,
-            "taiex_chg_5d": taiex_chg_5d,
-            "taiex_bias_20ma": taiex_bias_20ma,
+            "taiex_close": t_close,
+            "taiex_chg_1d": t_1d,
+            "taiex_chg_5d": t_5d,
+            "taiex_bias_20ma": t_bias,
         }
 
     latest_d_raw, latest_s = valid_days[0]
     margin_date = f"{latest_d_raw[:4]}-{latest_d_raw[4:6]}-{latest_d_raw[6:8]}"
+    taiex_date, taiex_close, taiex_chg_1d, taiex_chg_5d, taiex_bias_20ma = _calc_taiex_metrics(taiex_rows, target_date_iso=margin_date)
+
     curr_amt_yi = latest_s["margin_amt_yi"]
     chg_1d_yi = latest_s["margin_amt_chg_yi"]
     chg_5d_yi = round(sum(x[1]["margin_amt_chg_yi"] for x in valid_days), 2)
@@ -710,6 +812,7 @@ def get_market_margin_analysis_cached(period_key):
     )
     diag.update({
         "available": True,
+        "taiex_date": taiex_date,
         "taiex_close": taiex_close,
         "taiex_chg_1d": taiex_chg_1d,
         "taiex_chg_5d": taiex_chg_5d,
@@ -2004,7 +2107,7 @@ if mkt_margin.get("available"):
         f"""<div class="card-box {m_cls}">
             <div class="card-title">📊 大盤資券變化 ｜ {mkt_margin['signal_badge']}</div>
             <div class="sec-body">
-                <b>加權指數</b>：{mkt_margin['taiex_close']:,.2f}（單日 {mkt_margin['taiex_chg_1d']:+.2f}% ／ 近5日 {mkt_margin['taiex_chg_5d']:+.2f}% ／ 距20MA {mkt_margin['taiex_bias_20ma']:+.2f}%）<br>
+                <b>加權指數 ({mkt_margin.get('taiex_date', mkt_margin['margin_date'])})</b>：{mkt_margin['taiex_close']:,.2f}（單日 {mkt_margin['taiex_chg_1d']:+.2f}% ／ 近5日 {mkt_margin['taiex_chg_5d']:+.2f}% ／ 距20MA {mkt_margin['taiex_bias_20ma']:+.2f}%）<br>
                 <b>上市融資餘額</b>：{mkt_margin['curr_amt_yi']:,.2f} 億元（單日 <b>{mkt_margin['chg_1d_yi']:+.2f} 億</b> ／ 近{mkt_margin.get('days_counted',5)}日 <b>{mkt_margin['chg_5d_yi']:+.2f} 億</b>）｜ 資券日：{mkt_margin['margin_date']}<br>
                 <b>盤勢解讀</b>：{mkt_margin['summary_text']}
             </div>
