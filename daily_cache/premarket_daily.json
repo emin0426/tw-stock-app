@@ -1,16 +1,16 @@
 {
-  "date": "2026-11-26",
-  "updated_at": "2026-11-26 14:49",
+  "date": "2026-11-27",
+  "updated_at": "2026-11-27 06:25",
   "phase": "Phase 1 (免費開放資料源)",
-  "last_stage": "0815",
+  "last_stage": "0530",
   "part1_overnight": {
-    "fetched_at": "13:45",
+    "fetched_at": "06:25",
     "prev_taiex": {
       "available": true,
-      "date": "2026-11-25",
-      "close": 38195.43
+      "date": "2026-11-26",
+      "close": 39151.81
     },
-    "us_holiday": false,
+    "us_holiday": true,
     "us_indices": {
       "SOX": {
         "symbol": "^SOX",
@@ -85,143 +85,45 @@
       "contract_month": "202612",
       "close": 38482.0,
       "chg_pts": -1842.0,
-      "chg_pct": 0.0
+      "chg_pct": 0.0,
+      "is_fresh": false
     },
     "foreign_oi": {
       "available": true,
-      "date": "2026-11-25",
-      "net_oi": -105709,
-      "day_chg": -2508
+      "date": "2026-11-26",
+      "net_oi": -106275,
+      "day_chg": -583
     },
     "margin_prev": {
       "available": true,
-      "date": "2026-11-25",
-      "amt_yi": 4341.38,
-      "chg_yi": -193.67
+      "date": "2026-11-26",
+      "amt_yi": 4344.84,
+      "chg_yi": 3.46
     },
     "ex_dividend": {
       "count": 1,
       "stocks": [
         {
-          "code": "009817",
-          "name": "國泰日本不動產",
-          "cash_div": 0.33
+          "code": "3706",
+          "name": "神達",
+          "cash_div": 0.0
         }
       ],
       "est_evap_pts": 0.0
     },
-    "weighted_us_pct": -0.42,
-    "overnight_score": -3,
-    "overnight_tone": "偏空",
-    "est_gap_low": -1862,
-    "est_gap_high": -1822,
-    "est_open_pts": 36353.4
+    "weighted_us_pct": 0.0,
+    "model_overnight_pct": 0.0,
+    "overnight_score": 0,
+    "overnight_tone": "中性震盪",
+    "gap_source": "美股加權＋台積電ADR多因子模型",
+    "base_gap_pts": 0,
+    "est_gap_low": -45,
+    "est_gap_high": 45,
+    "est_open_pts": 39151.8
   },
-  "part2_asia_0815": {
-    "fetched_at": "14:49",
-    "quotes": {
-      "N225": {
-        "symbol": "^N225",
-        "name": "日經225",
-        "available": true,
-        "price": 57499.16,
-        "prev_close": 57011.62,
-        "chg_pct": 0.86,
-        "date": "2026-11-26"
-      },
-      "KOSPI": {
-        "symbol": "^KS11",
-        "name": "韓國KOSPI",
-        "available": true,
-        "price": 4710.65,
-        "prev_close": 4697.51,
-        "chg_pct": 0.28,
-        "date": "2026-11-26"
-      },
-      "SAMSUNG": {
-        "symbol": "005930.KS",
-        "name": "三星電子",
-        "available": true,
-        "price": 171500.0,
-        "prev_close": 170700.0,
-        "chg_pct": 0.47,
-        "date": "2026-11-26"
-      },
-      "HYNIX": {
-        "symbol": "000660.KS",
-        "name": "SK海力士",
-        "available": true,
-        "price": 1053500.0,
-        "prev_close": 1030000.0,
-        "chg_pct": 2.28,
-        "date": "2026-11-26"
-      },
-      "NQ": {
-        "symbol": "NQ=F",
-        "name": "小那斯達克電子盤",
-        "available": true,
-        "price": 26222.75,
-        "prev_close": 26100.25,
-        "chg_pct": 0.47,
-        "date": "2026-11-26"
-      },
-      "ES": {
-        "symbol": "ES=F",
-        "name": "小標普電子盤",
-        "available": true,
-        "price": 7221.5,
-        "prev_close": 7195.75,
-        "chg_pct": 0.36,
-        "date": "2026-11-26"
-      },
-      "DXY": {
-        "symbol": "DX-Y.NYB",
-        "name": "美元指數",
-        "available": true,
-        "price": 103.8,
-        "prev_close": 103.67,
-        "chg_pct": 0.13,
-        "date": "2026-11-26"
-      },
-      "US10Y": {
-        "symbol": "^TNX",
-        "name": "美債10年殖利率",
-        "available": true,
-        "price": 4.85,
-        "prev_close": 4.9,
-        "chg_pct": -1.02,
-        "date": "2026-11-25"
-      }
-    },
-    "asia_live_pct": 0.51,
-    "blended_pct": 0.18,
-    "divergence_flag": "BULL_DIVERGENCE",
-    "divergence_tag": "🛡️ 低接支撐訊號（美股收黑但韓股強彈/電子盤翻紅）",
-    "final_score": -1,
-    "final_tone": "中性震盪",
-    "est_gap_low": 9,
-    "est_gap_high": 129,
-    "semi_analysis": "費半 (-0.65%) 與台積電 ADR (-1.96%) 偏弱，開盤留意台積電與 AI／半導體權值股是否出現獲利回吐壓力。",
-    "chip_analysis": "外資台指期淨空單高達 -105,709 口，避險心態偏重，反彈遇壓時易出現期現貨同步調節；前日上市融資大減 -193.7 億，浮額有效清洗。",
-    "macro_analysis": "美元指數 103.8 (+0.13%)、美債10Y殖利率 4.85% (-1.02%)（美元與美債殖利率走跌通常有利外資資金回流新興亞股）。",
-    "calc_method_note": "採「隔夜美股/ADR (-0.42%) 與 08:15 日韓股/電子盤 (+0.51%) 加權合成 (+0.18%)」估算（前收 38,195 點）",
-    "scenario_note": "🛡️ 低接支撐訊號！美股雖收黑，但早盤日韓股與小那電子盤已明顯翻紅反攻，台股有機會開高或開低迅速拉抬，重點觀察台積電開盤是否站穩平盤之上。"
-  },
+  "part2_asia_0815": {},
   "part3_futures_0848": {},
   "part4_auction_0858": {},
-  "card_0815": {
-    "title": "盤前總覽 11/26 08:15",
-    "tone": "中性震盪",
-    "score": -1,
-    "divergence_flag": "BULL_DIVERGENCE",
-    "divergence_tag": "🛡️ 低接支撐訊號（美股收黑但韓股強彈/電子盤翻紅）",
-    "us_line": "費半 -0.65%、NASDAQ -0.62%、S&P500 -0.25%、台積電ADR -1.96%",
-    "chip_line": "期交所夜盤尚未換日（暫不採計舊值，改用國際盤模型）｜外資期貨淨部位 -105,709 口（單日 -2,508 口）｜今日無重大除息扣點",
-    "asia_line": "日經 +0.86%、韓股 +0.28%、小那電子盤 +0.47%（🛡️ 低接支撐訊號（美股收黑但韓股強彈/電子盤翻紅））",
-    "est_gap_text": "跳空開高約 +9 至 +129 點（預估開盤約 38,204～38,324 點）",
-    "scenario": "費半 (-0.65%) 與台積電 ADR (-1.96%) 偏弱，開盤留意台積電與 AI／半導體權值股是否出現獲利回吐壓力。 外資台指期淨空單高達 -105,709 口，避險心態偏重，反彈遇壓時易出現期現貨同步調節；前日上市融資大減 -193.7 億，浮額有效清洗。 🛡️ 低接支撐訊號！美股雖收黑，但早盤日韓股與小那電子盤已明顯翻紅反攻，台股有機會開高或開低迅速拉抬，重點觀察台積電開盤是否站穩平盤之上。",
-    "line_text": "【盤前總覽 11/26 08:15】\n▶ 盤前基調：中性震盪（綜合評分 -1 / 5）\n▶ 預估開盤：跳空開高約 +9 至 +129 點（預估開盤約 38,204～38,324 點）\n\n【一、國際盤與半導體連動】\n• 美股與 ADR：費半 -0.65%、NASDAQ -0.62%、S&P500 -0.25%、台積電ADR -1.96%\n• 08:15 亞股與電子盤：日經 +0.86%、韓股 +0.28%、小那電子盤 +0.47%（🛡️ 低接支撐訊號（美股收黑但韓股強彈/電子盤翻紅））\n• 盤勢解讀：費半 (-0.65%) 與台積電 ADR (-1.96%) 偏弱，開盤留意台積電與 AI／半導體權值股是否出現獲利回吐壓力。\n\n【二、籌碼與總經溫度計】\n• 期貨與籌碼：期交所夜盤尚未換日（暫不採計舊值，改用國際盤模型）｜外資期貨淨部位 -105,709 口（單日 -2,508 口）｜前日融資 4,341.4 億（-193.7 億）｜今日無重大除息扣點\n• 籌碼解讀：外資台指期淨空單高達 -105,709 口，避險心態偏重，反彈遇壓時易出現期現貨同步調節；前日上市融資大減 -193.7 億，浮額有效清洗。\n• 匯債動向：美元指數 103.8 (+0.13%)、美債10Y殖利率 4.85% (-1.02%)（美元與美債殖利率走跌通常有利外資資金回流新興亞股）。\n\n【三、今日開盤觀察劇本】\n• 🛡️ 低接支撐訊號！美股雖收黑，但早盤日韓股與小那電子盤已明顯翻紅反攻，台股有機會開高或開低迅速拉抬，重點觀察台積電開盤是否站穩平盤之上。\n• 估算依據：採「隔夜美股/ADR (-0.42%) 與 08:15 日韓股/電子盤 (+0.51%) 加權合成 (+0.18%)」估算（前收 38,195 點）",
-    "updated_at": "14:49"
-  },
+  "card_0815": null,
   "card_0858": null
 }
