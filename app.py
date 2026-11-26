@@ -2098,6 +2098,71 @@ else:
         f"🕒 已過每日 **15:30** 更新時段，採用最新完整收盤價與三大法人籌碼資料。"
     )
 
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_premarket_daily_cached():
+    """優先讀取本機 daily_cache/premarket_daily.json，次之讀取 GitHub Raw 雲端盤前狀態檔"""
+    local_p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "daily_cache", "premarket_daily.json")
+    if os.path.exists(local_p):
+        try:
+            with open(local_p, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    try:
+        ssl_ctx = ssl._create_unverified_context()
+        url = f"https://raw.githubusercontent.com/emin0426/tw-stock-app/main/daily_cache/premarket_daily.json?t={int(time.time())}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=8, context=ssl_ctx) as resp:
+            return json.loads(resp.read().decode("utf-8", errors="ignore"))
+    except Exception:
+        return None
+
+
+# 🌅 盤前自動分析看板（固定顯示 08:15 完整簡報 & 08:58 終版開盤定案 2 張卡片）
+pm_data = load_premarket_daily_cached()
+if pm_data and (pm_data.get("card_0815") or pm_data.get("card_0858")):
+    c15 = pm_data.get("card_0815")
+    c58 = pm_data.get("card_0858")
+    col_pm1, col_pm2 = st.columns(2)
+    with col_pm1:
+        if c15:
+            tone_cls = "card-warn" if c15.get("divergence_flag") == "BEAR_DIVERGENCE" or c15.get("tone") == "偏空" else "card-star" if c15.get("tone") == "偏多" else "card-watch"
+            st.markdown(
+                f"""<div class="card-box {tone_cls}">
+                    <div class="card-title">🌅 {c15['title']}（{c15['tone']} {c15['score']:+d}/5）</div>
+                    <div class="sec-body">
+                        <b>美股與 ADR</b>：{c15['us_line']}<br>
+                        <b>夜盤與籌碼</b>：{c15['chip_line']}<br>
+                        <b>08:15 亞股校正</b>：{c15['asia_line']}<br>
+                        <b>初步預估</b>：<b>{c15['est_gap_text']}</b><br>
+                        <b>觀察劇本</b>：{c15['scenario']}
+                    </div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.info("🌅 **08:15 盤前完整簡報**：等待今日 08:15 自動更新...")
+    with col_pm2:
+        if c58:
+            st.markdown(
+                f"""<div class="card-box card-watch">
+                    <div class="card-title">🔔 {c58['title']}</div>
+                    <div class="sec-body">
+                        <b>方向判定</b>：{c58['direction']}<br>
+                        <b>台指期日盤</b>：{c58['futures_line']}<br>
+                        <b>權值股試撮</b>：{c58['auction_line']}<br>
+                        <b>終版預估跳空</b>：<b>{c58['est_gap_text']}</b><br>
+                        <b>操作提醒</b>：{c58['reminder']}
+                    </div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.info("🔔 **08:58 終版開盤定案**：Phase 2 接入券商 API 後將於 08:58 自動定案（目前參考左側 08:15 簡報）。")
+else:
+    st.caption("🌅 盤前自動分析看板：尚未偵測到 `daily_cache/premarket_daily.json`（執行一次 `premarket_scan.yml` 後將於此自動顯示 08:15 與 08:58 兩張盤前卡片）。")
+
 # 📊 每日大盤資券變化與多空溫度計
 mkt_margin = get_market_margin_analysis_cached(period_key)
 if mkt_margin.get("available"):

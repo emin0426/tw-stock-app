@@ -117,6 +117,47 @@
         <span id="dataDatePill" class="px-2 py-0.5 rounded-md bg-slate-800 text-sky-300 font-semibold text-[11px] shrink-0">--</span>
       </div>
 
+      <!-- 盤前自動分析看板（08:15 完整簡報 ＋ 08:58 終版開盤定案） -->
+      <div id="premarketBoard" class="space-y-2">
+        <div id="pmCard0815" class="rounded-2xl p-3.5 bg-slate-900/90 border border-slate-800 space-y-1.5 text-xs">
+          <div class="flex items-center justify-between gap-2">
+            <span id="pm15Title" class="font-bold text-white">🌅 08:15 盤前完整簡報</span>
+            <span id="pm15Badge" class="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-slate-800 text-slate-300">待同步</span>
+          </div>
+          <div id="pm15Body" class="text-[11px] text-slate-300 leading-relaxed">等待載入 daily_cache/premarket_daily.json（請於 GitHub Actions 啟用 premarket_scan.yml）...</div>
+        </div>
+        <div id="pmCard0858" class="rounded-2xl p-3.5 bg-slate-900/90 border border-slate-800 space-y-1.5 text-xs">
+          <div class="flex items-center justify-between gap-2">
+            <span id="pm58Title" class="font-bold text-white">🔔 08:58 終版開盤定案</span>
+            <span id="pm58Badge" class="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-slate-800 text-slate-400">待定案</span>
+          </div>
+          <div id="pm58Body" class="text-[11px] text-slate-400 leading-relaxed">08:48 台指期日盤校正與 08:58 五大權值股試撮定案將於開盤前更新。</div>
+        </div>
+      </div>
+
+      <!-- 大盤資券變化溫度計卡片 -->
+      <div id="marketMarginCard" class="rounded-2xl p-3.5 bg-slate-900/90 border border-slate-800 space-y-2 text-xs">
+        <div class="flex items-center justify-between gap-2">
+          <span class="font-bold text-white flex items-center gap-1.5">📊 大盤資券變化</span>
+          <span id="mmBadge" class="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-slate-800 text-slate-300">載入中...</span>
+        </div>
+        <div id="mmStats" class="grid grid-cols-3 gap-1.5 text-center hidden">
+          <div class="rounded-lg bg-slate-950/80 border border-slate-800/80 py-1.5 px-1">
+            <div class="text-[10px] text-slate-400">加權指數</div>
+            <div id="mmTaiex" class="text-xs font-bold text-slate-100 mt-0.5">--</div>
+          </div>
+          <div class="rounded-lg bg-slate-950/80 border border-slate-800/80 py-1.5 px-1">
+            <div class="text-[10px] text-slate-400">上市融資(億)</div>
+            <div id="mmAmt" class="text-xs font-bold text-amber-300 mt-0.5">--</div>
+          </div>
+          <div class="rounded-lg bg-slate-950/80 border border-slate-800/80 py-1.5 px-1">
+            <div class="text-[10px] text-slate-400">單日/5日增減</div>
+            <div id="mmChg" class="text-xs font-bold text-sky-300 mt-0.5">--</div>
+          </div>
+        </div>
+        <p id="mmText" class="text-[11px] text-slate-300 leading-relaxed">正在讀取最新大盤融資餘額與多空訊號...</p>
+      </div>
+
       <!-- 市場分段切換列 -->
       <div class="grid grid-cols-4 gap-1.5 p-1 rounded-xl bg-slate-900 border border-slate-800/90" id="marketTabs">
         <button data-mode="twse" class="market-btn py-2 rounded-lg text-xs font-semibold transition">上市股</button>
@@ -250,6 +291,11 @@
           <div class="p-3 rounded-xl bg-slate-950/70 border border-slate-800/80">
             <div class="font-bold text-emerald-400 mb-1">4. 雙層防守紀律（大賺小賠核心）</div>
             短線第一道停損守<b>「突破紅 K 低點」</b>（跌破代表假突破立即小賠出場）；獲利拉開後改守<b>「跌破 20MA 月線三日站不回」</b>抱完整波段。
+          </div>
+          <div class="p-3 rounded-xl bg-slate-950/70 border border-slate-800/80">
+            <div class="font-bold text-purple-400 mb-1">5. 大盤與個股資券變化（過熱警訊 vs. 落底訊號）</div>
+            <b>🚨 過熱警訊</b>：股價高檔爆量且融資暴增，或股價下跌但融資一路增加（散戶接刀、籌碼凌亂）。<br/>
+            <b>🟢 落底訊號</b>：股價跌深後出現「殺融資」清洗浮額，隨後止跌轉為「價漲資減」，代表籌碼由散戶流向主力大戶。
           </div>
         </div>
       </div>
@@ -451,6 +497,8 @@
       watchlist: [],
       selectedStock: null,
       watchlistHistory: null,
+      marketMargin: null,
+      premarketDaily: null,
       priceChartInst: null,
       volChartInst: null,
       streamlitUrl: ""
@@ -525,6 +573,134 @@
       }
     }
 
+    async function loadPremarketDaily(forceNetwork = false) {
+      if (!forceNetwork && state.premarketDaily) {
+        renderPremarketBoard();
+        return;
+      }
+      try {
+        const resp = await fetch(`${GITHUB_CACHE_BASE}/premarket_daily.json?t=${Date.now()}`, { cache: "no-store" });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        state.premarketDaily = await resp.json();
+      } catch (e) {
+        state.premarketDaily = null;
+      }
+      renderPremarketBoard();
+    }
+
+    function renderPremarketBoard() {
+      const pm = state.premarketDaily;
+      const c15El = document.getElementById("pmCard0815");
+      const t15 = document.getElementById("pm15Title");
+      const b15 = document.getElementById("pm15Badge");
+      const body15 = document.getElementById("pm15Body");
+      const t58 = document.getElementById("pm58Title");
+      const b58 = document.getElementById("pm58Badge");
+      const body58 = document.getElementById("pm58Body");
+
+      if (!pm || (!pm.card_0815 && !pm.card_0858)) {
+        b15.textContent = "尚無今日盤前檔";
+        body15.textContent = "請至 GitHub Actions 執行「每日盤前自動分析 (premarket_scan.yml)」，即會自動於每日 08:15 顯示美股、ADR、日韓股背離校正與預估跳空。";
+        return;
+      }
+
+      if (pm.card_0815) {
+        const c15 = pm.card_0815;
+        t15.textContent = `🌅 ${c15.title}`;
+        const sc = Number(c15.score || 0);
+        b15.textContent = `${c15.tone} (${sc > 0 ? "+" : ""}${sc}/5)`;
+        if (c15.divergence_flag === "BEAR_DIVERGENCE" || c15.tone === "偏空") {
+          c15El.className = "rounded-2xl p-3.5 bg-rose-950/25 border border-rose-500/40 space-y-1.5 text-xs";
+          b15.className = "px-2 py-0.5 rounded-md text-[11px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40";
+        } else if (c15.tone === "偏多") {
+          c15El.className = "rounded-2xl p-3.5 bg-emerald-950/20 border border-emerald-500/40 space-y-1.5 text-xs";
+          b15.className = "px-2 py-0.5 rounded-md text-[11px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40";
+        } else {
+          c15El.className = "rounded-2xl p-3.5 bg-slate-900/90 border border-slate-800 space-y-1.5 text-xs";
+          b15.className = "px-2 py-0.5 rounded-md text-[11px] font-semibold bg-slate-800 text-sky-300 border border-slate-700";
+        }
+        body15.innerHTML = `
+          <div><span class="text-slate-400">美股與ADR：</span>${c15.us_line}</div>
+          <div><span class="text-slate-400">夜盤與籌碼：</span>${c15.chip_line}</div>
+          <div><span class="text-slate-400">08:15校正：</span>${c15.asia_line}</div>
+          <div><span class="text-slate-400">初步預估：</span><b class="text-amber-300">${c15.est_gap_text}</b></div>
+          <div><span class="text-slate-400">觀察劇本：</span>${c15.scenario}</div>
+        `;
+      }
+
+      if (pm.card_0858) {
+        const c58 = pm.card_0858;
+        t58.textContent = `🔔 ${c58.title}`;
+        b58.textContent = c58.mode === "phase1_standby" ? "Phase 1 沿用" : "終版定案";
+        b58.className = "px-2 py-0.5 rounded-md text-[11px] font-semibold bg-sky-500/20 text-sky-300 border border-sky-500/40";
+        body58.innerHTML = `
+          <div><span class="text-slate-400">方向判定：</span><b class="text-white">${c58.direction}</b></div>
+          <div><span class="text-slate-400">台指期日盤：</span>${c58.futures_line}</div>
+          <div><span class="text-slate-400">權值股試撮：</span>${c58.auction_line}</div>
+          <div><span class="text-slate-400">終版預估：</span><b class="text-amber-300">${c58.est_gap_text}</b></div>
+          <div><span class="text-slate-400">操作提醒：</span>${c58.reminder}</div>
+        `;
+      } else {
+        b58.textContent = "等待 08:58";
+        body58.textContent = "將於 08:58 整合台指期日盤與前五大權值股試撮定案（Phase 2 接入券商 API 後啟用）。";
+      }
+    }
+
+    async function loadMarketMargin(forceNetwork = false) {
+      if (!forceNetwork && state.marketMargin) {
+        renderMarketMargin();
+        return;
+      }
+      try {
+        const resp = await fetch(`${GITHUB_CACHE_BASE}/market_margin.json?t=${Date.now()}`, { cache: "no-store" });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        state.marketMargin = await resp.json();
+      } catch (e) {
+        state.marketMargin = {
+          available: false,
+          signal_level: "NEUTRAL",
+          signal_badge: "待同步大盤資券",
+          summary_text: "請至 GitHub Actions 執行一次最新預抓（precompute_daily.py），即可每日自動顯示大盤融資餘額與過熱／落底訊號。"
+        };
+      }
+      renderMarketMargin();
+    }
+
+    function renderMarketMargin() {
+      const mm = state.marketMargin;
+      if (!mm) return;
+      const card = document.getElementById("marketMarginCard");
+      const badgeEl = document.getElementById("mmBadge");
+      const statsEl = document.getElementById("mmStats");
+      const textEl = document.getElementById("mmText");
+
+      badgeEl.textContent = mm.signal_badge || "大盤資券";
+      if (mm.signal_level === "OVERHEAT") {
+        card.className = "rounded-2xl p-3.5 bg-rose-950/25 border border-rose-500/40 space-y-2 text-xs";
+        badgeEl.className = "px-2 py-0.5 rounded-md text-[11px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40";
+      } else if (mm.signal_level === "BOTTOM") {
+        card.className = "rounded-2xl p-3.5 bg-emerald-950/25 border border-emerald-500/40 space-y-2 text-xs";
+        badgeEl.className = "px-2 py-0.5 rounded-md text-[11px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40";
+      } else {
+        card.className = "rounded-2xl p-3.5 bg-slate-900/90 border border-slate-800 space-y-2 text-xs";
+        badgeEl.className = "px-2 py-0.5 rounded-md text-[11px] font-semibold bg-slate-800 text-sky-300 border border-slate-700";
+      }
+
+      if (mm.available) {
+        statsEl.classList.remove("hidden");
+        const t1 = Number(mm.taiex_chg_1d || 0);
+        const d1 = Number(mm.chg_1d_yi || 0);
+        const d5 = Number(mm.chg_5d_yi || 0);
+        document.getElementById("mmTaiex").textContent = `${Number(mm.taiex_close || 0).toLocaleString()} (${t1 > 0 ? "+" : ""}${t1.toFixed(2)}%)`;
+        document.getElementById("mmAmt").textContent = `${Number(mm.curr_amt_yi || 0).toFixed(1)} 億`;
+        document.getElementById("mmChg").textContent = `${d1 > 0 ? "+" : ""}${d1.toFixed(1)} / ${d5 > 0 ? "+" : ""}${d5.toFixed(1)}億`;
+        textEl.textContent = `${mm.summary_text}（資券日：${mm.margin_date || "--"}）`;
+      } else {
+        statsEl.classList.add("hidden");
+        textEl.textContent = mm.summary_text || "暫無大盤資券資料";
+      }
+    }
+
     // ==========================================
     // 4. 畫面渲染：股票卡片與清單
     // ==========================================
@@ -540,7 +716,7 @@
         showToast(`已移除自選：${code} ${stockObj["股票名稱"]}`);
       } else {
         const todayStr = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
-        state.watchlist.unshift({ ...stockObj, _added_date: stockObj["資料日期"] || todayStr });
+        state.watchlist.unshift({ ...stockObj, _added_date: stockObj["資料日期"] || todayStr, _added_price: stockObj["收盤價"] });
         showToast(`⭐ 已加入自選：${code} ${stockObj["股票名稱"]}`);
       }
       saveWatchlist();
@@ -551,7 +727,7 @@
       }
     }
 
-    function createStockCardHTML(row, tierTag) {
+    function createStockCardHTML(row, tierTag, isWatchCard = false) {
       const dr = row._deep_report || {};
       const badge = dr.rating_badge || row["實戰型態定調與優先級"] || "";
       const pct = Number(row["單日漲幅(%)"] || 0);
@@ -576,10 +752,32 @@
                   ${tierTag === "FULL" ? "4/4全中" : "3/4準突破"}
                 </span>
               </div>
-              <div class="mt-1.5 inline-block px-2 py-0.5 rounded-md text-[11px] font-medium ${badgeCls}">
-                ${badge.split("（")[0]}
+              <div class="mt-1.5 flex flex-wrap items-center gap-1.5">
+                <span class="inline-block px-2 py-0.5 rounded-md text-[11px] font-medium ${badgeCls}">
+                  ${badge.split("（")[0]}
+                </span>
+                ${row["資券籌碼訊號"] ? (() => {
+                  const ms = String(row["資券籌碼訊號"]);
+                  const mCls = ms.includes("過熱") ? "bg-rose-500/20 text-rose-300 border border-rose-500/40"
+                    : ms.includes("落底") ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                    : "bg-slate-800 text-slate-300 border border-slate-700";
+                  return `<span class="inline-block px-2 py-0.5 rounded-md text-[10px] font-semibold ${mCls}">${ms}</span>`;
+                })() : ""}
               </div>
               ${row["營業概況(主力業務)"] ? `<div class="mt-1 text-[11px] text-slate-400 truncate">🏢 ${row["營業概況(主力業務)"]}</div>` : ""}
+              ${isWatchCard ? (() => {
+                const addedPx = Number(row._added_price || 0);
+                const curPx = Number(row["收盤價"] || 0);
+                const cumPct = addedPx > 0 ? +(((curPx - addedPx) / addedPx) * 100).toFixed(2) : null;
+                const cumColor = cumPct === null ? "text-slate-400" : (cumPct > 0 ? "text-rose-400" : cumPct < 0 ? "text-emerald-400" : "text-slate-300");
+                const cumText = cumPct === null ? "" : ` ｜ 累計 <span class="font-semibold ${cumColor}">${cumPct > 0 ? "+" : ""}${cumPct.toFixed(2)}%</span>`;
+                const stopPx = Number(row["突破紅K低點(停損參考)"] || 0);
+                const stopBroken = stopPx > 0 && curPx > 0 && curPx < stopPx;
+                return `<div class="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-400">
+                  <span>最新 ${row["資料日期"] || "--"}${addedPx > 0 ? `（加入價 ${addedPx}）` : ""}${cumText}</span>
+                  ${stopBroken ? `<span class="px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40 font-semibold text-[10px]">🚨 跌破紅K停損</span>` : ""}
+                </div>`;
+              })() : ""}
             </div>
 
             <div class="flex items-start gap-2.5 shrink-0">
@@ -687,6 +885,55 @@
       });
     }
 
+    function getSyncedWatchStock(savedRow) {
+      const code = savedRow["股票代碼"];
+      const addedDate = savedRow._added_date || savedRow["資料日期"] || "";
+      const addedPrice = savedRow._added_price !== undefined ? savedRow._added_price : savedRow["收盤價"];
+      const origStop = savedRow["突破紅K低點(停損參考)"];
+
+      // 1) 若當日已載入的市場快取中也有該股，優先補齊最新法人/帶寬等欄位（保留原始加入日、加入價與紅K停損）
+      let merged = { ...savedRow, _added_date: addedDate, _added_price: addedPrice };
+      for (const modeKey of Object.keys(state.cacheByMode)) {
+        const pkg = state.cacheByMode[modeKey];
+        if (!pkg || pkg.is_demo) continue;
+        const allRows = [...(pkg.full_sorted || []), ...(pkg.near_top || [])];
+        const fresh = allRows.find(x => x["股票代碼"] === code);
+        if (fresh && (!merged["資料日期"] || (fresh["資料日期"] || "") >= merged["資料日期"])) {
+          merged = {
+            ...merged,
+            ...fresh,
+            _added_date: addedDate,
+            _added_price: addedPrice,
+            "突破紅K低點(停損參考)": origStop ?? fresh["突破紅K低點(停損參考)"]
+          };
+          break;
+        }
+      }
+
+      // 2) 從每日自動更新的 watchlist_history.json 套用最新收盤價、單日漲幅、20MA、成交量與最新日期
+      const histEntry = state.watchlistHistory && state.watchlistHistory[code];
+      const ch = histEntry && histEntry.chart;
+      if (ch && Array.isArray(ch.dates) && ch.dates.length && Array.isArray(ch.close) && ch.close.length) {
+        const n = ch.close.length;
+        const latestDate = ch.dates[n - 1];
+        const latestClose = Number(ch.close[n - 1]);
+        if (latestDate && (!merged["資料日期"] || latestDate >= merged["資料日期"])) {
+          const prevClose = n >= 2 ? Number(ch.close[n - 2]) : 0;
+          const dailyPct = prevClose > 0 ? +(((latestClose - prevClose) / prevClose) * 100).toFixed(2) : Number(merged["單日漲幅(%)"] || 0);
+          merged["資料日期"] = latestDate;
+          merged["收盤價"] = latestClose;
+          merged["單日漲幅(%)"] = dailyPct;
+          if (Array.isArray(ch.ma20) && ch.ma20[n - 1] !== null && ch.ma20[n - 1] !== undefined) {
+            merged["20MA月線價"] = ch.ma20[n - 1];
+          }
+          if (Array.isArray(ch.vol) && ch.vol[n - 1] !== null && ch.vol[n - 1] !== undefined) {
+            merged["成交量(張)"] = ch.vol[n - 1];
+          }
+        }
+      }
+      return merged;
+    }
+
     function renderWatchlist() {
       const el = document.getElementById("watchlistContainer");
       if (!state.watchlist.length) {
@@ -696,8 +943,9 @@
           </div>`;
         return;
       }
-      el.innerHTML = state.watchlist.map(r => createStockCardHTML(r, r._tier || "NEAR")).join("");
-      const lookup = Object.fromEntries(state.watchlist.map(r => [r["股票代碼"], r]));
+      const syncedList = state.watchlist.map(r => getSyncedWatchStock(r));
+      el.innerHTML = syncedList.map(r => createStockCardHTML(r, r._tier || "NEAR", true)).join("");
+      const lookup = Object.fromEntries(syncedList.map(r => [r["股票代碼"], r]));
       el.querySelectorAll(".stock-card").forEach(card => {
         card.addEventListener("click", (e) => {
           if (e.target.closest(".star-btn")) return;
@@ -807,8 +1055,8 @@
     // ==========================================
     // 5.5 價量雙圖表與技術分析引導說明引擎 (Chart.js)
     // ==========================================
-    async function fetchWatchlistHistory() {
-      if (state.watchlistHistory) return state.watchlistHistory;
+    async function fetchWatchlistHistory(forceNetwork = false) {
+      if (!forceNetwork && state.watchlistHistory) return state.watchlistHistory;
       try {
         const resp = await fetch(`${GITHUB_CACHE_BASE}/watchlist_history.json?t=${Date.now()}`, { cache: "no-store" });
         if (resp.ok) {
@@ -1085,7 +1333,12 @@
           active ? "text-sky-400 font-semibold" : "text-slate-400 font-medium"
         }`;
       });
-      if (tabName === "watchlist") renderWatchlist();
+      if (tabName === "watchlist") {
+        renderWatchlist();
+        if (!state.watchlistHistory) {
+          fetchWatchlistHistory().then(() => { if (state.activeTab === "watchlist") renderWatchlist(); });
+        }
+      }
       if (tabName === "tools") renderCalculator();
       window.scrollTo({ top: 0, behavior: "smooth" });
     }
@@ -1118,8 +1371,15 @@
       renderRadar();
     });
 
-    document.getElementById("btnRefresh").addEventListener("click", () => {
-      loadMarketData(state.mode, true);
+    document.getElementById("btnRefresh").addEventListener("click", async () => {
+      await Promise.all([
+        loadMarketData(state.mode, true),
+        fetchWatchlistHistory(true),
+        loadMarketMargin(true),
+        loadPremarketDaily(true)
+      ]);
+      if (state.activeTab === "watchlist") renderWatchlist();
+      showToast("已同步最新雲端快取與自選報價");
     });
 
     document.getElementById("btnClearWatch").addEventListener("click", () => {
@@ -1171,6 +1431,11 @@
     // 初始化
     renderCalculator();
     loadMarketData(state.mode);
+    loadMarketMargin();
+    loadPremarketDaily();
+    fetchWatchlistHistory().then(() => {
+      if (state.activeTab === "watchlist") renderWatchlist();
+    });
   </script>
 </body>
 </html>
