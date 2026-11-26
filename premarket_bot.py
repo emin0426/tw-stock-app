@@ -421,6 +421,16 @@ def compute_overnight_score(us_quotes, adr_quotes, txf_night, foreign_oi, us_hol
     return score, tone, weighted_us
 
 
+def _is_txf_night_fresh(txf_night, today_d: date):
+    """檢查期交所 DailyMarketReportFut 回傳的夜盤日期是否真的是今晨最新交易日，避免誤用昨日舊報表"""
+    if not txf_night or not txf_night.get("available"):
+        return False
+    raw_d = str(txf_night.get("date", "")).replace("-", "").replace("/", "").strip()
+    today_yyyymmdd = today_d.strftime("%Y%m%d")
+    # 期交所 OpenAPI 日期格式通常為 YYYYMMDD；只有等於今日才代表是今晨 05:00 新夜盤
+    return raw_d == today_yyyymmdd
+
+
 def run_stage_0530(st, today_d: date):
     print(f"🌙 [05:30] 開始抓取隔夜美股、ADR、台指期夜盤、外資期貨與除息扣點 ({today_d})...")
     prev_taiex = fetch_prev_taiex_close()
@@ -431,24 +441,36 @@ def run_stage_0530(st, today_d: date):
     margin_prev = fetch_twse_margin_latest(prev_taiex.get("date"))
     ex_div = fetch_twse_ex_dividend_today(today_d)
 
-    # 美股休市防呆：檢查 SOX/NASDAQ 最新日期是否落後預期前一個美股交易日超過 2 個工作天
+    # 美股休市防呆
     expected_us_d = today_d - timedelta(days=3 if today_d.weekday() == 0 else 1)
     sox_date = us_quotes.get("SOX", {}).get("date", "")
     us_holiday = bool(sox_date and sox_date < expected_us_d.strftime("%Y-%m-%d"))
 
-    score, tone, weighted_us = compute_overnight_score(us_quotes, adr_quotes, txf_night, foreign_oi, us_holiday)
+    # 檢查期交所夜盤是否為過期舊報表
+    txf_is_fresh = _is_txf_night_fresh(txf_night, today_d)
+    txf_night["is_fresh"] = txf_is_fresh
+
+    score, tone, weighted_us = compute_overnight_score(
+        us_quotes, adr_quotes, txf_night if txf_is_fresh else {"available": False}, foreign_oi, us_holiday
+    )
     evap_pts = ex_div.get("est_evap_pts", 0.0)
     prev_close = prev_taiex.get("close", 0.0)
 
-    # 初步開盤跳空估計（優先採用台指期夜盤，無夜盤則由美股加權漲跌幅換算）
-    if txf_night.get("available"):
-        base_gap = round(txf_night["chg_pts"] - evap_pts, 0)
-    else:
-        est_pct = (weighted_us * 0.65 + (adr_quotes.get("TSM", {}).get("chg_pct", 0.0) * 0.35)) / 100.0
-        base_gap = round(prev_close * est_pct - evap_pts, 0) if prev_close > 0 else 0.0
+    # 多因子國際盤初步推估：美股加權(50%) + 台積電ADR(50%)
+    tsm_pct = adr_quotes.get("TSM", {}).get("chg_pct", 0.0) if (not us_holiday and adr_quotes.get("TSM", {}).get("available")) else weighted_us
+    model_overnight_pct = 0.0 if us_holiday else round(weighted_us * 0.50 + tsm_pct * 0.50, 2)
+    model_gap_pts = round(prev_close * (model_overnight_pct / 100.0) - evap_pts, 0) if prev_close > 0 else 0.0
 
-    est_low = int(round(base_gap - 20))
-    est_high = int(round(base_gap + 20))
+    # 只有在「今晨夜盤日期確實為今日」且「與國際盤合理落差 <= 450 點」時才直接採用夜盤點數，否則採多因子模型
+    if txf_is_fresh and abs(txf_night.get("chg_pts", 0.0) - model_gap_pts) <= 450:
+        base_gap = round(txf_night["chg_pts"] - evap_pts, 0)
+        gap_source = "今晨台指期夜盤"
+    else:
+        base_gap = model_gap_pts
+        gap_source = "美股加權＋台積電ADR多因子模型"
+
+    est_low = int(round(base_gap - 45))
+    est_high = int(round(base_gap + 45))
 
     st["part1_overnight"] = {
         "fetched_at": datetime.now(TW_TZ).strftime("%H:%M"),
@@ -461,15 +483,18 @@ def run_stage_0530(st, today_d: date):
         "margin_prev": margin_prev,
         "ex_dividend": ex_div,
         "weighted_us_pct": weighted_us,
+        "model_overnight_pct": model_overnight_pct,
         "overnight_score": score,
         "overnight_tone": tone,
+        "gap_source": gap_source,
+        "base_gap_pts": int(round(base_gap)),
         "est_gap_low": est_low,
         "est_gap_high": est_high,
         "est_open_pts": round(prev_close + base_gap, 1) if prev_close > 0 else 0.0,
     }
     st["last_stage"] = "0530"
     save_state(st)
-    print(f"✅ [05:30] 靜默存檔完成：隔夜基調={tone} ({score:+d}/5)，初步跳空估計 {est_low:+d} 至 {est_high:+d} 點")
+    print(f"✅ [05:30] 靜默存檔完成：隔夜基調={tone} ({score:+d}/5)，來源={gap_source}，初步跳空 {est_low:+d} 至 {est_high:+d} 點")
     return st
 
 
@@ -482,20 +507,37 @@ def build_card_0815(st):
     tone = p2.get("final_tone", p1.get("overnight_tone", "中性震盪"))
     us = p1.get("us_indices", {})
     adrs = p1.get("adrs", {})
+    prev_taiex = p1.get("prev_taiex", {})
+    prev_close = prev_taiex.get("close", 0.0)
 
     def _fmt_pct(d, key):
         q = d.get(key, {})
-        return f"{q['chg_pct']:+.2f}%" if q.get("available") else "休市/無資料"
+        return f"{q['chg_pct']:+.2f}%" if q.get("available") else "無資料"
 
     us_line = (
         "美股前一日休市（不重複計入舊收盤）"
         if p1.get("us_holiday")
-        else f"費半 {_fmt_pct(us, 'SOX')}、NASDAQ {_fmt_pct(us, 'NASDAQ')}、台積電 ADR {_fmt_pct(adrs, 'TSM')}"
+        else f"費半 {_fmt_pct(us, 'SOX')}、NASDAQ {_fmt_pct(us, 'NASDAQ')}、S&P500 {_fmt_pct(us, 'SP500')}、台積電ADR {_fmt_pct(adrs, 'TSM')}"
     )
+
     txf = p1.get("txf_night", {})
-    txf_str = f"台指期夜盤 {txf['chg_pts']:+.0f} 點" if txf.get("available") else "台指期夜盤 暫無資料"
+    if txf.get("available") and txf.get("is_fresh"):
+        txf_str = f"今晨台指期夜盤 {txf['chg_pts']:+.0f} 點"
+    elif txf.get("available"):
+        txf_str = f"期交所夜盤尚未換日（暫不採計舊值，改用國際盤模型）"
+    else:
+        txf_str = "台指期夜盤 暫無資料（改用國際盤模型）"
+
     foi = p1.get("foreign_oi", {})
-    foi_str = f"外資期貨淨部位 {foi['net_oi']:+,} 口" if foi.get("available") and foi.get("net_oi") is not None else "外資期貨 詳見期交所"
+    if foi.get("available") and foi.get("net_oi") is not None:
+        chg_txt = f"（單日 {foi['day_chg']:+,} 口）" if foi.get("day_chg") is not None else ""
+        foi_str = f"外資期貨淨部位 {foi['net_oi']:+,} 口{chg_txt}"
+    else:
+        foi_str = "外資期貨 詳見期交所"
+
+    mp = p1.get("margin_prev", {})
+    margin_str = f"前日融資 {mp['amt_yi']:,.1f} 億（{mp['chg_yi']:+.1f} 億）" if mp.get("available") else ""
+
     evap = p1.get("ex_dividend", {}).get("est_evap_pts", 0.0)
     evap_str = f"今日除息扣點 -{evap:.1f} 點" if evap > 0 else "今日無重大除息扣點"
 
@@ -505,17 +547,32 @@ def build_card_0815(st):
 
     est_lo = p2.get("est_gap_low", p1.get("est_gap_low", 0))
     est_hi = p2.get("est_gap_high", p1.get("est_gap_high", 0))
-    dir_word = "跳空開高" if (est_lo + est_hi) > 30 else "跳空開低" if (est_lo + est_hi) < -30 else "平盤附近震盪"
-    scenario = p2.get("scenario_note", "開盤後留意前 15 分鐘預估量是否大於五日均量")
+    mid_gap = (est_lo + est_hi) / 2.0
+    dir_word = "跳空開高" if mid_gap > 40 else "跳空開低" if mid_gap < -40 else "平盤附近震盪"
+    pts_range_str = f"（預估開盤約 {prev_close + est_lo:,.0f}～{prev_close + est_hi:,.0f} 點）" if prev_close > 0 else ""
+
+    # 深度盤勢拆解文字（白話分析）
+    semi_note = p2.get("semi_analysis", "")
+    chip_note = p2.get("chip_analysis", "")
+    macro_note = p2.get("macro_analysis", "")
+    scenario = p2.get("scenario_note", "開盤後盯緊前 15 分鐘預估量是否大於五日均量，以及權值股是否守穩開盤價。")
+    method_note = p2.get("calc_method_note", "")
 
     line_text = (
         f"【盤前總覽 {mmdd} 08:15】\n"
-        f"- 隔夜基調：{tone}（基準分 {score:+d} / 5）\n"
-        f"- 美股與 ADR：{us_line}\n"
-        f"- 夜盤與籌碼：{txf_str}｜{foi_str}｜{evap_str}\n"
-        f"- 08:15 亞股校正：{asia_line}\n"
-        f"- 初步預估：{dir_word}約 {est_lo:+d} 至 {est_hi:+d} 點\n"
-        f"- 觀察劇本：{scenario}"
+        f"▶ 盤前基調：{tone}（綜合評分 {score:+d} / 5）\n"
+        f"▶ 預估開盤：{dir_word}約 {est_lo:+d} 至 {est_hi:+d} 點{pts_range_str}\n\n"
+        f"【一、國際盤與半導體連動】\n"
+        f"• 美股與 ADR：{us_line}\n"
+        f"• 08:15 亞股與電子盤：{asia_line}\n"
+        f"• 盤勢解讀：{semi_note}\n\n"
+        f"【二、籌碼與總經溫度計】\n"
+        f"• 期貨與籌碼：{txf_str}｜{foi_str}" + (f"｜{margin_str}" if margin_str else "") + f"｜{evap_str}\n"
+        f"• 籌碼解讀：{chip_note}\n"
+        f"• 匯債動向：{macro_note}\n\n"
+        f"【三、今日開盤觀察劇本】\n"
+        f"• {scenario}\n"
+        f"• 估算依據：{method_note}"
     )
 
     return {
@@ -527,8 +584,8 @@ def build_card_0815(st):
         "us_line": us_line,
         "chip_line": f"{txf_str}｜{foi_str}｜{evap_str}",
         "asia_line": asia_line,
-        "est_gap_text": f"{dir_word}約 {est_lo:+d} 至 {est_hi:+d} 點",
-        "scenario": scenario,
+        "est_gap_text": f"{dir_word}約 {est_lo:+d} 至 {est_hi:+d} 點{pts_range_str}",
+        "scenario": f"{semi_note} {chip_note} {scenario}",
         "line_text": line_text,
         "updated_at": datetime.now(TW_TZ).strftime("%H:%M"),
     }
@@ -541,50 +598,130 @@ def run_stage_0815(st, today_d: date):
     print(f"🌅 [08:15] 開始抓取日韓股、三星/海力士、小那/小標普電子盤與 DXY/美債...")
     asia_quotes = {k: _fetch_yf_quote(sym, nm) for k, (sym, nm) in ASIA_MACRO_TICKERS.items()}
     p1 = st["part1_overnight"]
+    prev_close = p1.get("prev_taiex", {}).get("close", 0.0)
+    evap_pts = p1.get("ex_dividend", {}).get("est_evap_pts", 0.0)
     us_pct = p1.get("weighted_us_pct", 0.0)
+    model_us_pct = p1.get("model_overnight_pct", us_pct)
+    us_holiday = p1.get("us_holiday", False)
+
+    n225_pct = asia_quotes.get("N225", {}).get("chg_pct", 0.0) if asia_quotes.get("N225", {}).get("available") else 0.0
     kospi_pct = asia_quotes.get("KOSPI", {}).get("chg_pct", 0.0) if asia_quotes.get("KOSPI", {}).get("available") else 0.0
     nq_pct = asia_quotes.get("NQ", {}).get("chg_pct", 0.0) if asia_quotes.get("NQ", {}).get("available") else 0.0
+    es_pct = asia_quotes.get("ES", {}).get("chg_pct", 0.0) if asia_quotes.get("ES", {}).get("available") else 0.0
+    sam_pct = asia_quotes.get("SAMSUNG", {}).get("chg_pct", 0.0) if asia_quotes.get("SAMSUNG", {}).get("available") else 0.0
+    hynix_pct = asia_quotes.get("HYNIX", {}).get("chg_pct", 0.0) if asia_quotes.get("HYNIX", {}).get("available") else 0.0
 
-    # 背離檢查（嚴格依規則：美股收紅但韓股/NQ翻黑 -> 利多出盡警戒；美股收黑但韓股抗跌/NQ翻紅 -> 低接支撐訊號）
+    # 計算 08:15 亞股與美股電子盤綜合即時動能 (%)
+    asia_live_pct = round(nq_pct * 0.45 + kospi_pct * 0.30 + n225_pct * 0.25, 2)
+
+    # 背離檢查與動態權重校正
     score = p1.get("overnight_score", 0)
-    est_lo, est_hi = p1.get("est_gap_low", 0), p1.get("est_gap_high", 0)
-
-    if not p1.get("us_holiday") and us_pct >= 0.4 and (kospi_pct <= -0.3 or nq_pct <= -0.25):
+    if not us_holiday and us_pct >= 0.4 and (kospi_pct <= -0.3 or nq_pct <= -0.25):
         div_flag = "BEAR_DIVERGENCE"
         div_tag = "⚠️ 利多出盡警戒（美股收紅但亞股/電子盤翻黑）"
         score = max(-5, score - 2)
-        est_lo -= 35
-        est_hi -= 20
-        scenario = "⚠️ 利多出盡警戒！開高後勿急追，嚴防開高走低獲利了結賣壓。"
-    elif not p1.get("us_holiday") and us_pct <= -0.4 and (kospi_pct >= 0.2 or nq_pct >= 0.25):
+        blended_pct = round(model_us_pct * 0.35 + asia_live_pct * 0.65, 2)
+        scenario = "⚠️ 利多出盡警戒！隔夜美股雖收紅，但 08:15 韓股與美股電子盤轉弱，開高後切勿急追，留意 09:05～09:15 是否量縮或開高走低。"
+    elif not us_holiday and us_pct <= -0.4 and (kospi_pct >= 0.2 or nq_pct >= 0.25):
         div_flag = "BULL_DIVERGENCE"
-        div_tag = "🛡️ 低接支撐訊號（美股收黑但韓股抗跌/電子盤翻紅）"
+        div_tag = "🛡️ 低接支撐訊號（美股收黑但韓股強彈/電子盤翻紅）"
         score = min(5, score + 2)
-        est_lo += 20
-        est_hi += 35
-        scenario = "🛡️ 低接支撐訊號！開低後留意權值股承接力道，觀察開低走高收腳機會。"
+        # 電子盤與日韓股已領先翻紅強彈，08:15 即時動能權重拉高至 65%
+        blended_pct = round(model_us_pct * 0.35 + asia_live_pct * 0.65, 2)
+        scenario = "🛡️ 低接支撐訊號！美股雖收黑，但早盤日韓股與小那電子盤已明顯翻紅反攻，台股有機會開高或開低迅速拉抬，重點觀察台積電開盤是否站穩平盤之上。"
     else:
         div_flag = "ALIGNED"
+        blended_pct = round(model_us_pct * 0.50 + asia_live_pct * 0.50, 2) if not us_holiday else asia_live_pct
+        if asia_live_pct >= 0.6:
+            score = min(5, score + 1)
+        elif asia_live_pct <= -0.6:
+            score = max(-5, score - 1)
         if score >= 2:
             div_tag = "同向偏多，無背離"
-            scenario = "多方因子同向，跳空延續機率較高；開高後留意是否量縮獲利了結。"
+            scenario = "美股與 08:15 亞股電子盤同步偏多，延續跳空方向機率高；開高後留意 09:05 預估量是否大於五日均量，避免無量虛漲。"
         elif score <= -2:
             div_tag = "同向偏空，無背離"
-            scenario = "空方壓力一致，開低先守關鍵支撐，勿急於摸底接刀。"
+            scenario = "國際盤與亞股同步承壓，開低先守關鍵支撐（20MA 或前低），嚴忌開盤第一盤盲目接刀，等 09:15 權值股止穩再評估。"
         else:
             div_tag = "震盪中性，無明顯背離"
-            scenario = "國際盤訊號分歧或變動有限，預期平盤上下震盪，以個股強弱為主。"
+            scenario = "國際盤多空力道相抵，預期平盤上下震盪整理，操作以個股強弱與法人買超標的為主。"
+
+    # 計算校正後的預估跳空點數（若今晨夜盤為最新且未與亞股劇烈背離，則採夜盤＋亞股電子盤差額校正；否則採多因子綜合漲跌幅）
+    txf = p1.get("txf_night", {})
+    if txf.get("is_fresh") and div_flag == "ALIGNED" and prev_close > 0:
+        # 今晨夜盤已反映隔夜美股，08:15 再加上小那電子盤早盤變動校正
+        est_mid = round(txf["chg_pts"] - evap_pts + prev_close * (nq_pct * 0.35 / 100.0), 0)
+        calc_method_note = f"採「今晨台指期夜盤 ({txf['chg_pts']:+.0f} 點)＋08:15 電子盤微調 - 除息扣點」估算"
+    elif prev_close > 0:
+        est_mid = round(prev_close * (blended_pct / 100.0) - evap_pts, 0)
+        calc_method_note = f"採「隔夜美股/ADR ({model_us_pct:+.2f}%) 與 08:15 日韓股/電子盤 ({asia_live_pct:+.2f}%) 加權合成 ({blended_pct:+.2f}%)」估算（前收 {prev_close:,.0f} 點）"
+    else:
+        est_mid = 0
+        calc_method_note = "前日大盤收盤暫無資料，僅供方向參考"
+
+    est_lo = int(round(est_mid - 60))
+    est_hi = int(round(est_mid + 60))
+
+    # 產生白話深度分析文字
+    sox_q = p1.get("us_indices", {}).get("SOX", {})
+    tsm_q = p1.get("adrs", {}).get("TSM", {})
+    if us_holiday:
+        semi_analysis = f"美股前一日休市，今早直接以亞股為風向：日經 {n225_pct:+.2f}%、韓股 {kospi_pct:+.2f}%（三星 {sam_pct:+.2f}% / 海力士 {hynix_pct:+.2f}%）。"
+    else:
+        sox_v = sox_q.get("chg_pct", 0.0)
+        tsm_v = tsm_q.get("chg_pct", 0.0)
+        if tsm_v <= -1.0 and kospi_pct >= 0.5:
+            semi_analysis = f"隔夜費半 ({sox_v:+.2f}%) 與台積電 ADR ({tsm_v:+.2f}%) 雖收黑，但早盤韓國半導體（三星 {sam_pct:+.2f}% / 海力士 {hynix_pct:+.2f}%）與小那電子盤 ({nq_pct:+.2f}%) 強彈，顯示科技股賣壓已在亞盤時段消化。"
+        elif sox_v >= 0.8 and tsm_v >= 0.8:
+            semi_analysis = f"費半 ({sox_v:+.2f}%) 與台積電 ADR ({tsm_v:+.2f}%) 雙雙轉強，搭配三星 {sam_pct:+.2f}% / 海力士 {hynix_pct:+.2f}%，有利台股電子權值股開盤領攻。"
+        elif sox_v <= -0.8 or tsm_v <= -1.0:
+            semi_analysis = f"費半 ({sox_v:+.2f}%) 與台積電 ADR ({tsm_v:+.2f}%) 偏弱，開盤留意台積電與 AI／半導體權值股是否出現獲利回吐壓力。"
+        else:
+            semi_analysis = f"美股半導體漲跌有限（費半 {sox_v:+.2f}%、台積電 ADR {tsm_v:+.2f}%），開盤焦點回歸亞股（三星 {sam_pct:+.2f}% / 海力士 {hynix_pct:+.2f}%）與內資中小型輪動。"
+
+    foi = p1.get("foreign_oi", {})
+    mp = p1.get("margin_prev", {})
+    chip_parts = []
+    if foi.get("available") and foi.get("net_oi") is not None:
+        net_oi = foi["net_oi"]
+        if net_oi <= -35000:
+            chip_parts.append(f"外資台指期淨空單高達 {net_oi:,} 口，避險心態偏重，反彈遇壓時易出現期現貨同步調節")
+        elif net_oi < 0:
+            chip_parts.append(f"外資台指期維持淨空單 {net_oi:,} 口，屬常態避險水位")
+        else:
+            chip_parts.append(f"外資台指期呈現淨多單 {net_oi:+,} 口，期貨籌碼偏多支撐")
+    if mp.get("available"):
+        mc = mp["chg_yi"]
+        if mc <= -20:
+            chip_parts.append(f"前日上市融資大減 {mc:+.1f} 億，浮額有效清洗")
+        elif mc >= 25:
+            chip_parts.append(f"前日上市融資大增 {mc:+.1f} 億，短線散戶追價浮額升溫")
+        else:
+            chip_parts.append(f"前日融資變動溫和 ({mc:+.1f} 億)")
+    chip_analysis = "；".join(chip_parts) + "。" if chip_parts else "期貨與融資籌碼數據將於盤後持續追蹤。"
+
+    dxy_q = asia_quotes.get("DXY", {})
+    tnx_q = asia_quotes.get("US10Y", {})
+    dxy_txt = f"美元指數 {dxy_q['price']} ({dxy_q['chg_pct']:+.2f}%)" if dxy_q.get("available") else "美元指數暫無資料"
+    tnx_txt = f"美債10Y殖利率 {tnx_q['price']:.2f}% ({tnx_q['chg_pct']:+.2f}%)" if tnx_q.get("available") else "美債殖利率暫無資料"
+    macro_note = f"{dxy_txt}、{tnx_txt}（美元與美債殖利率走跌通常有利外資資金回流新興亞股）。"
 
     final_tone = "偏多" if score >= 2 else "偏空" if score <= -2 else "中性震盪"
     st["part2_asia_0815"] = {
         "fetched_at": datetime.now(TW_TZ).strftime("%H:%M"),
         "quotes": asia_quotes,
+        "asia_live_pct": asia_live_pct,
+        "blended_pct": blended_pct,
         "divergence_flag": div_flag,
         "divergence_tag": div_tag,
         "final_score": score,
         "final_tone": final_tone,
-        "est_gap_low": int(est_lo),
-        "est_gap_high": int(est_hi),
+        "est_gap_low": est_lo,
+        "est_gap_high": est_hi,
+        "semi_analysis": semi_analysis,
+        "chip_analysis": chip_analysis,
+        "macro_analysis": macro_note,
+        "calc_method_note": calc_method_note,
         "scenario_note": scenario,
     }
     st["card_0815"] = build_card_0815(st)
