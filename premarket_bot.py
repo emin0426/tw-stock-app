@@ -656,7 +656,7 @@ def run_stage_0858(st, today_d: date):
 
 
 # ==========================================
-# LINE Messaging API 主動推播（/v2/bot/message/push）
+# LINE Messaging API 主動推播（支援單人 push / 多人 multicast / 全好友 broadcast）
 # ==========================================
 def push_line_message(text, dry_run=False):
     if dry_run:
@@ -666,16 +666,32 @@ def push_line_message(text, dry_run=False):
         return True
 
     token = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
-    user_id = os.environ.get("LINE_USER_ID", "").strip()
-    if not token or not user_id:
-        print("ℹ️ 尚未設定 LINE_CHANNEL_ACCESS_TOKEN 或 LINE_USER_ID，略過 LINE 推播（資料已正常寫入 premarket_daily.json）。")
+    raw_target = os.environ.get("LINE_USER_ID", "").strip()
+    if not token:
+        print("ℹ️ 尚未設定 LINE_CHANNEL_ACCESS_TOKEN，略過 LINE 推播（資料已正常寫入 premarket_daily.json）。")
         return False
 
-    url = "https://api.line.me/v2/bot/message/push"
-    payload = json.dumps({
-        "to": user_id,
-        "messages": [{"type": "text", "text": text[:4900]}],
-    }).encode("utf-8")
+    msg_list = [{"type": "text", "text": text[:4900]}]
+
+    # 模式 1：LINE_USER_ID 設為 ALL / BROADCAST 或留空 -> 廣播給所有加此官方帳號好友的家人（免查每個人 User ID）
+    if not raw_target or raw_target.upper() in ("ALL", "BROADCAST"):
+        url = "https://api.line.me/v2/bot/message/broadcast"
+        body = {"messages": msg_list}
+        mode_lbl = "全好友廣播 (broadcast)"
+    else:
+        ids = [x.strip() for x in raw_target.replace(";", ",").split(",") if x.strip()]
+        if len(ids) > 1:
+            # 模式 2：多組逗號分隔 User ID -> 多人同時推播 (multicast)
+            url = "https://api.line.me/v2/bot/message/multicast"
+            body = {"to": ids, "messages": msg_list}
+            mode_lbl = f"多人指定推播 ({len(ids)} 位)"
+        else:
+            # 模式 3：單一 User ID -> 單人推播 (push)
+            url = "https://api.line.me/v2/bot/message/push"
+            body = {"to": ids[0], "messages": msg_list}
+            mode_lbl = "單人推播 (push)"
+
+    payload = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=payload,
@@ -687,10 +703,10 @@ def push_line_message(text, dry_run=False):
     )
     try:
         with urllib.request.urlopen(req, timeout=12) as resp:
-            print(f"✅ LINE Messaging API 推播成功 (HTTP {resp.status})！")
+            print(f"✅ LINE Messaging API [{mode_lbl}] 推播成功 (HTTP {resp.status})！")
             return True
     except Exception as ex:
-        print(f"⚠️ LINE 推播失敗：{ex}")
+        print(f"⚠️ LINE [{mode_lbl}] 推播失敗：{ex}")
         return False
 
 
