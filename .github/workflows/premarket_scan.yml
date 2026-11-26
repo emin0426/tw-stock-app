@@ -1,0 +1,76 @@
+name: 每日盤前自動分析與 LINE 推播 (Phase 1)
+
+on:
+  schedule:
+    # 05:30 台灣時間 = 前一日 21:30 UTC（週日～週四晚上 = 台灣週一～週五清晨 05:30）
+    - cron: '30 21 * * 0-4'
+    # 08:15 台灣時間 = 當日 00:15 UTC（台灣週一～週五 08:15；提早 3 分鐘於 00:12 排隊抵銷 GitHub 延遲）
+    - cron: '12 0 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: '手動測試階段 (0530 / 0815 / 0858 / auto)'
+        required: true
+        default: '0815'
+        type: choice
+        options:
+          - '0530'
+          - '0815'
+          - '0858'
+          - 'auto'
+      push_line:
+        description: '是否同步發送 LINE 推播（需先於 Repository Secrets 設定 Token 與 User ID）'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  premarket-update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 下載專案程式碼
+        uses: actions/checkout@v4
+
+      - name: 設定 Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安裝必要套件
+        run: |
+          pip install --upgrade pip
+          pip install yfinance pandas numpy
+
+      - name: 執行盤前分析引擎並更新 premarket_daily.json
+        env:
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            STAGE="${{ github.event.inputs.stage }}"
+            PUSH_FLAG=""
+            if [ "${{ github.event.inputs.push_line }}" = "true" ]; then
+              PUSH_FLAG="--push-line"
+            fi
+            python premarket_bot.py --stage "$STAGE" $PUSH_FLAG --force
+          else
+            # 依排程時間自動決定階段（05:30 靜默存檔；08:15 推播第 1 則 LINE）
+            python premarket_bot.py --stage auto --push-line
+          fi
+
+      - name: 推送最新 daily_cache/premarket_daily.json 回 GitHub
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          if [ -f daily_cache/premarket_daily.json ]; then
+            git add daily_cache/premarket_daily.json
+            if ! git diff --cached --quiet; then
+              git commit -m "chore: 自動更新盤前分析看板 premarket_daily.json"
+              git push
+            else
+              echo "premarket_daily.json 無變動，略過 commit。"
+            fi
+          fi
