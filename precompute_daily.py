@@ -22,6 +22,8 @@ class _DummyCtx:
 
 class _DummySt(types.ModuleType):
     secrets = {}
+    def __enter__(self): return self
+    def __exit__(self, *args): pass
     session_state = {}
     query_params = {}
     def set_page_config(self, *a, **k): pass

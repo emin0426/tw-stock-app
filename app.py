@@ -57,7 +57,7 @@ st.markdown(
     .card-watch { border-left: 6px solid #0d6efd; background-color: #f4f8ff; }
     .card-warn { border-left: 6px solid #dc3545; background-color: #fff5f5; }
     .card-title { font-size: 1.08rem; font-weight: 700; margin-bottom: 6px; color: #1f2328; }
-    .card-badge { font-size: 0.9rem; font-weight: 600; margin-bottom: 10px; }
+    .card-badge { color: #1e293b !important; font-size: 0.9rem; font-weight: 600; margin-bottom: 10px; }
     .sec-head { font-weight: 700; color: #1F4E78; margin-top: 8px; margin-bottom: 3px; font-size: 0.95rem; }
     .sec-body { font-size: 0.9rem; line-height: 1.55; color: #24292f; white-space: pre-line; }
     .disclaimer-box {
