@@ -4,8 +4,8 @@ on:
   schedule:
     # 05:30 台灣時間 = 前一日 21:30 UTC（週日～週四晚上 = 台灣週一～週五清晨 05:30）
     - cron: '30 21 * * 0-4'
-    # 08:15 台灣時間 = 當日 00:15 UTC（台灣週一～週五 08:15；提早 3 分鐘於 00:12 排隊抵銷 GitHub 延遲）
-    - cron: '12 0 * * 1-5'
+    # 08:07 台灣時間 = 當日 00:07 UTC（刻意提早避開 UTC 00:15 全球尖峰，確保約 08:15 前後送達）
+    - cron: '7 0 * * 1-5'
   workflow_dispatch:
     inputs:
       stage:
@@ -21,7 +21,7 @@ on:
       push_line:
         description: '是否同步發送 LINE 推播（需先於 Repository Secrets 設定 Token 與 User ID）'
         required: true
-        default: false
+        default: true
         type: boolean
 
 permissions:
@@ -56,9 +56,12 @@ jobs:
               PUSH_FLAG="--push-line"
             fi
             python premarket_bot.py --stage "$STAGE" $PUSH_FLAG --force
+          elif [ "${{ github.event.schedule }}" = "30 21 * * 0-4" ]; then
+            # 05:30 固定靜默存檔，不推播
+            python premarket_bot.py --stage 0530
           else
-            # 依排程時間自動決定階段（05:30 靜默存檔；08:15 推播第 1 則 LINE）
-            python premarket_bot.py --stage auto --push-line
+            # 08:15 固定執行 0815 並強制推播（即使 GitHub 排隊延遲超過 08:40 也不會漏發）
+            python premarket_bot.py --stage 0815 --push-line
           fi
 
       - name: 推送最新 daily_cache/premarket_daily.json 回 GitHub
